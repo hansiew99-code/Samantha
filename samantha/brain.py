@@ -79,7 +79,14 @@ class Brain:
             return reply
         model = pick_model(text, max_tier=self.max_tier())
         system, messages = assemble(self.memory, text, self.settings.timezone)
-        reply = await self.run_loop(model, system, messages, purpose="chat")
+        try:
+            reply = await self.run_loop(model, system, messages, purpose="chat")
+        except Exception:  # noqa: BLE001 — never let one message kill the daemon
+            log.exception("handle_message failed")
+            reply = (
+                "Something went wrong reaching my brain just now — I've logged "
+                "it. Try me again in a moment?"
+            )
         self.memory.log_message("assistant", reply)
         return reply
 

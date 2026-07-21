@@ -65,6 +65,32 @@ class Settings:
     def clickup_enabled(self) -> bool:
         return bool(self.clickup_api_token and self.clickup_team_id)
 
+    def validate(self) -> list[str]:
+        """Return human-readable fatal problems (empty = OK to run).
+
+        Catches the #1 real-world failure: a credential mangled on paste (the
+        Anthropic/Telegram tokens are always plain ASCII, so any non-ASCII byte
+        means the value was corrupted — better to fail loudly at startup than
+        crash on the first message)."""
+        problems: list[str] = []
+        if not self.anthropic_api_key:
+            problems.append("ANTHROPIC_API_KEY is missing.")
+        elif not self.anthropic_api_key.isascii():
+            problems.append(
+                "ANTHROPIC_API_KEY contains non-text characters — it was almost "
+                "certainly corrupted on paste. Re-enter it (base64 method if a "
+                "secret-masker keeps eating it)."
+            )
+        elif not self.anthropic_api_key.startswith("sk-ant-"):
+            problems.append("ANTHROPIC_API_KEY doesn't look like an Anthropic key (should start with 'sk-ant-').")
+        if not self.telegram_bot_token:
+            problems.append("TELEGRAM_BOT_TOKEN is missing.")
+        elif not self.telegram_bot_token.isascii() or ":" not in self.telegram_bot_token:
+            problems.append("TELEGRAM_BOT_TOKEN looks corrupted (expected '<digits>:<token>').")
+        if not self.telegram_chat_id:
+            problems.append("TELEGRAM_CHAT_ID is missing or zero.")
+        return problems
+
     def summary(self) -> str:
         lines = [
             f"db: {self.db_path}",
@@ -85,15 +111,15 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         load_dotenv(env_file)
     env = os.environ
     return Settings(
-        anthropic_api_key=env.get("ANTHROPIC_API_KEY", ""),
-        telegram_bot_token=env.get("TELEGRAM_BOT_TOKEN", ""),
-        telegram_chat_id=int(env.get("TELEGRAM_CHAT_ID", "0") or 0),
+        anthropic_api_key=env.get("ANTHROPIC_API_KEY", "").strip(),
+        telegram_bot_token=env.get("TELEGRAM_BOT_TOKEN", "").strip(),
+        telegram_chat_id=int(env.get("TELEGRAM_CHAT_ID", "0").strip() or 0),
         google_credentials_path=Path(env.get("GOOGLE_CREDENTIALS_PATH", "google_credentials.json")),
         google_token_path=Path(env.get("GOOGLE_TOKEN_PATH", "google_token.json")),
-        slack_bot_token=env.get("SLACK_BOT_TOKEN", ""),
-        slack_app_token=env.get("SLACK_APP_TOKEN", ""),
-        clickup_api_token=env.get("CLICKUP_API_TOKEN", ""),
-        clickup_team_id=env.get("CLICKUP_TEAM_ID", ""),
+        slack_bot_token=env.get("SLACK_BOT_TOKEN", "").strip(),
+        slack_app_token=env.get("SLACK_APP_TOKEN", "").strip(),
+        clickup_api_token=env.get("CLICKUP_API_TOKEN", "").strip(),
+        clickup_team_id=env.get("CLICKUP_TEAM_ID", "").strip(),
         db_path=Path(env.get("SAMANTHA_DB_PATH", "samantha.db")),
         timezone=env.get("SAMANTHA_TIMEZONE", "Asia/Kuala_Lumpur"),
         daily_budget_usd=float(env.get("SAMANTHA_DAILY_BUDGET_USD", "0.177")),

@@ -50,12 +50,22 @@ def main() -> None:
     if args.dry_run:
         settings.dry_run = True
 
+    problems = settings.validate()
+
     if args.check_config:
         print(settings.summary())
-        sys.exit(0)
+        if problems:
+            print("\nProblems:")
+            for p in problems:
+                print(f"  ✗ {p}")
+        else:
+            print("\nAll required credentials look valid.")
+        sys.exit(1 if problems else 0)
 
-    if not settings.anthropic_enabled and not settings.dry_run:
-        print("ANTHROPIC_API_KEY is required (or use --dry-run). See .env.example.", file=sys.stderr)
+    if problems and not settings.dry_run:
+        print("Cannot start — fix these first (see .env):", file=sys.stderr)
+        for p in problems:
+            print(f"  ✗ {p}", file=sys.stderr)
         sys.exit(1)
 
     asyncio.run(run(settings))
