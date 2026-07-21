@@ -16,6 +16,7 @@ from .actions import PendingActions
 from .brain import Brain
 from .callbacks import CallbackRouter
 from .config import Settings
+from .consolidation import Consolidator
 from .db import connect
 from .digests import DigestService
 from .events import EventBus, Sweeper
@@ -61,6 +62,7 @@ class App:
     bus: EventBus = None
     sweeper: Sweeper | None = None
     digests: DigestService | None = None
+    consolidator: Consolidator | None = None
     brain: Brain | None = None
     gateway: TelegramGateway | None = None
     gcal: GCalClient | None = None
@@ -116,6 +118,7 @@ def build_app(settings: Settings) -> App:
         app.brain = Brain(settings, app.memory, app.registry, app.governor)
 
     _wire_proactivity(app)
+    _wire_consolidation(app)
 
     if settings.telegram_enabled and not settings.dry_run:
         app.gateway = TelegramGateway(
@@ -123,6 +126,7 @@ def build_app(settings: Settings) -> App:
             on_message=app.brain.handle_message if app.brain else None,
             on_callback=app.callbacks.dispatch,
         )
+        _register_commands(app)
         if app.brain is None:
             log.warning("no ANTHROPIC_API_KEY — telegram runs in echo mode")
     return app
@@ -267,6 +271,28 @@ def _wire_proactivity(app: App) -> None:
         CronTrigger(hour=settings.evening_digest.hour, minute=settings.evening_digest.minute),
         id="digest-evening",
     )
+
+
+# -- nightly consolidation + commands ----------------------------------------
+
+
+def _wire_consolidation(app: App) -> None:
+    if not app.settings.anthropic_enabled:
+        return
+    app.consolidator = Consolidator(
+        app.settings, app.conn, app.memory, app.governor
+    )
+    app.scheduler.add_job(
+        app.consolidator.run, CronTrigger(hour=3, minute=0), id="consolidation",
+        misfire_grace_time=3600,
+    )
+
+
+def _register_commands(app: App) -> None:
+    async def cmd_spend(_text: str) -> str:
+        return app.governor.spend_report()
+
+    app.gateway.register_command("spend", cmd_spend)
 
 
 # -- outbound approval gate ---------------------------------------------------

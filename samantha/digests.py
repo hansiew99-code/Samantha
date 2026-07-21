@@ -17,6 +17,7 @@ from .brain import Brain
 from .config import Settings
 from .context import assemble_base
 from .events import EventBus
+from .governor import DEGRADED, DETERMINISTIC
 from .memory import Memory
 from .router import HAIKU, SONNET
 
@@ -65,6 +66,17 @@ class DigestService:
         if self.brain is None:
             return
         data = await self._gather()
+        mode = self.brain.governor.mode()
+        if mode == DETERMINISTIC:
+            # Budget exhausted: a plain-text digest costs zero tokens.
+            text = self._plain_digest(data)
+            if text:
+                await self.notify(text)
+            self._consume_backlog()
+            return
+        if mode == DEGRADED:
+            model = HAIKU
+            instructions += "\n(Budget is tight today — keep it extremely short.)"
         system = assemble_base(self.memory)
         system.append({"type": "text", "text": instructions})
         text = await self.brain.run_loop(
@@ -77,10 +89,24 @@ class DigestService:
         if text.strip() and text.strip() != "NOTHING":
             await self.notify(text.strip())
             self.memory.log_message("assistant", text.strip())
-        # Digest consumed the backlog either way.
+        self._consume_backlog()
+
+    def _consume_backlog(self) -> None:
         for ev in self.bus.digest_backlog():
             if ev["processed_at"] is None:
                 self.bus.mark(ev["id"], "digest")
+
+    @staticmethod
+    def _plain_digest(data: dict) -> str:
+        lines = ["(zero-token digest — daily budget exhausted)"]
+        for ev in data.get("calendar_next_48h", [])[:6]:
+            lines.append(f"📅 {ev['start']}: {ev['summary']}")
+        for t in data.get("open_tasks", [])[:5]:
+            due = f" (due {t['due_at']})" if t.get("due_at") else ""
+            lines.append(f"☑️ {t['title']}{due}")
+        for item in data.get("backlog", [])[:5]:
+            lines.append(f"• [{item['source']}] {item['summary']}")
+        return "\n".join(lines) if len(lines) > 1 else ""
 
     async def _gather(self) -> dict:
         tz = ZoneInfo(self.settings.timezone)

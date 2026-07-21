@@ -13,7 +13,7 @@ import anthropic
 
 from .config import Settings
 from .context import assemble
-from .governor import Governor, Usage
+from .governor import DETERMINISTIC, Governor, Usage
 from .memory import Memory
 from .router import MODEL_PARAMS, OPUS, SONNET, TIER_ORDER, cap_tier, pick_model
 from .tools.registry import ToolRegistry
@@ -64,12 +64,19 @@ class Brain:
         self.governor = governor
         self.client = client or anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
-    # Phase 4 overrides this from the governor's budget mode.
     def max_tier(self) -> str:
-        return OPUS
+        return self.governor.max_tier()
 
     async def handle_message(self, text: str) -> str:
         self.memory.log_message("user", text)
+        if self.governor.mode() == DETERMINISTIC:
+            reply = (
+                "I've hit today's token budget, so I'm resting my brain until "
+                "midnight — reminders still fire and I'm still collecting "
+                "events for tomorrow's brief. (/spend for details.)"
+            )
+            self.memory.log_message("assistant", reply)
+            return reply
         model = pick_model(text, max_tier=self.max_tier())
         system, messages = assemble(self.memory, text, self.settings.timezone)
         reply = await self.run_loop(model, system, messages, purpose="chat")

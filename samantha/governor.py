@@ -1,13 +1,31 @@
 """Spend accounting + budget governor (BRIEF §9).
 
-Phase 1 ships the price table and the ledger (every API call is recorded).
-Phase 4 adds the mode thresholds and /spend.
+Every API call is priced into the ledger; the daily budget drives three modes:
+
+  normal        < 70%   full routing, Opus allowed
+  degraded      70-100% Haiku-only, sweeps hourly, digests shortened
+  deterministic ≥ 100%  no LLM at all — reminders still fire (they're free),
+                        events queue for tomorrow, chat gets a resting note
+
+The governor is a hard ceiling: the failure mode is a quieter Samantha,
+never a surprise bill.
 """
 
 from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+
+from .router import HAIKU, OPUS
+
+NORMAL = "normal"
+DEGRADED = "degraded"
+DETERMINISTIC = "deterministic"
+
+SOFT_THRESHOLD = 0.70
+HARD_THRESHOLD = 1.00
+
+USD_TO_MYR = 4.7  # display only
 
 # USD per million tokens: input, output, cache_read, cache_write (5m TTL).
 # Conservative sticker prices — Sonnet 5 intro pricing is cheaper until
@@ -89,3 +107,43 @@ class Governor:
             "WHERE created_at >= date('now', 'start of month')"
         ).fetchone()
         return float(row["c"])
+
+    # -- budget modes (BRIEF §9) ---------------------------------------------
+
+    def mode(self) -> str:
+        ratio = self.spent_today() / self.daily_budget_usd if self.daily_budget_usd else 0
+        if ratio >= HARD_THRESHOLD:
+            return DETERMINISTIC
+        if ratio >= SOFT_THRESHOLD:
+            return DEGRADED
+        return NORMAL
+
+    def max_tier(self) -> str:
+        """Highest model tier currently allowed. In deterministic mode the
+        caller shouldn't be making LLM calls at all — Haiku is the floor if
+        something must run (e.g. an already-in-flight loop)."""
+        return OPUS if self.mode() == NORMAL else HAIKU
+
+    def spend_report(self) -> str:
+        today = self.spent_today()
+        month = self.spent_month()
+        pct = (today / self.daily_budget_usd * 100) if self.daily_budget_usd else 0
+        lines = [
+            f"Today: ${today:.4f} of ${self.daily_budget_usd:.3f} ({pct:.0f}%) — mode: {self.mode()}",
+            f"This month: ${month:.2f} (≈ RM{month * USD_TO_MYR:.2f})",
+        ]
+        rows = self.conn.execute(
+            "SELECT model, COUNT(*) AS calls, SUM(cost_usd) AS cost, "
+            "SUM(cache_read_tokens) AS cached "
+            "FROM spend_log WHERE created_at >= date('now') "
+            "GROUP BY model ORDER BY cost DESC"
+        ).fetchall()
+        if rows:
+            lines.append("Today by model:")
+            for r in rows:
+                short = r["model"].replace("claude-", "")
+                lines.append(
+                    f"  {short}: {r['calls']} calls, ${r['cost']:.4f}"
+                    + (f", {r['cached'] // 1000}K cached reads" if r["cached"] else "")
+                )
+        return "\n".join(lines)

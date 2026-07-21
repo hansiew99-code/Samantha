@@ -19,6 +19,8 @@ from zoneinfo import ZoneInfo
 from .brain import Brain
 from .config import Settings
 from .context import assemble_base
+from .db import kv_get, kv_set
+from .governor import DEGRADED, DETERMINISTIC
 from .memory import Memory
 from .router import HAIKU
 from .rules import RulesEngine
@@ -112,10 +114,17 @@ class Sweeper:
 
     async def run_sweep(self) -> int:
         """Returns the number of events handled. Zero LLM calls when the queue
-        is empty, suppressed-only, or we're inside quiet hours."""
+        is empty, suppressed-only, inside quiet hours, or budget-exhausted.
+        In degraded mode sweeps thin out to hourly (BRIEF §9)."""
         now = datetime.now(ZoneInfo(self.settings.timezone))
         if in_quiet_hours(now, self.settings.quiet_hours):
             return 0
+        if self.brain is not None:
+            mode = self.brain.governor.mode()
+            if mode == DETERMINISTIC:
+                return 0  # events stay queued for tomorrow's digest
+            if mode == DEGRADED and not self._degraded_slot_due():
+                return 0
 
         events = self.bus.pending()
         if not events:
@@ -148,7 +157,23 @@ class Sweeper:
                 self.bus.mark(ev["id"], "digest")
         return len(events)
 
+    def _degraded_slot_due(self) -> bool:
+        """Degraded mode: sweep at most hourly. Tracks the last LLM-backed
+        sweep in integration_state."""
+        last = kv_get(self.bus.conn, "sweep.last_llm_run")
+        now = datetime.now(ZoneInfo(self.settings.timezone))
+        if last is not None:
+            elapsed = (now - datetime.fromisoformat(last)).total_seconds()
+            if elapsed < 55 * 60:
+                return False
+        return True
+
     async def _judge(self, events: list[sqlite3.Row]) -> dict[int, dict]:
+        kv_set(
+            self.bus.conn,
+            "sweep.last_llm_run",
+            datetime.now(ZoneInfo(self.settings.timezone)).isoformat(),
+        )
         listing = []
         index_to_id: dict[int, int] = {}
         for i, ev in enumerate(events):
