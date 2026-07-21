@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+*.db
+*.db-wal
+*.db-shm
+google_token.json
+google_credentials.json
+.pytest_cache/
+build/
+dist/

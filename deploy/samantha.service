@@ -1,0 +1,20 @@
+# systemd unit for Samantha. Install:
+#   sudo cp deploy/samantha.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now samantha
+[Unit]
+Description=Samantha personal AI assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=samantha
+WorkingDirectory=/opt/samantha
+ExecStart=/opt/samantha/.venv/bin/python -m samantha
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+# Secrets live in /opt/samantha/.env, loaded by the app itself.
+
+[Install]
+WantedBy=multi-user.target

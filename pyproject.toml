@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "samantha"
+version = "0.1.0"
+description = "A proactive, persistent-memory personal AI assistant. See BRIEF.md."
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.50",
+    "python-telegram-bot>=21.0",
+    "APScheduler>=3.10,<4",
+    "python-dotenv>=1.0",
+    "httpx>=0.27",
+    "google-api-python-client>=2.100",
+    "google-auth-oauthlib>=1.2",
+    "slack-sdk>=3.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+samantha = "samantha.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["samantha*"]
+
+[tool.setuptools.package-data]
+samantha = ["schema.sql"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
