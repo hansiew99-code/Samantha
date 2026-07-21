@@ -8,31 +8,16 @@ import logging
 import signal
 import sys
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
 from . import __version__
+from .app import build_app
 from .config import Settings, load_settings
-from .db import connect
-from .telegram_gateway import TelegramGateway
 
 log = logging.getLogger("samantha")
 
 
 async def run(settings: Settings) -> None:
-    conn = connect(settings.db_path)
-    scheduler = AsyncIOScheduler(timezone=settings.timezone)
-
-    gateway: TelegramGateway | None = None
-    if settings.telegram_enabled and not settings.dry_run:
-        gateway = TelegramGateway(settings)
-    elif settings.dry_run:
-        log.info("dry run: telegram gateway not started")
-    else:
-        log.warning("telegram not configured — running headless (scheduler only)")
-
-    scheduler.start()
-    if gateway:
-        await gateway.start()
+    app = build_app(settings)
+    await app.start()
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -44,10 +29,7 @@ async def run(settings: Settings) -> None:
         await stop.wait()
     finally:
         log.info("shutting down")
-        if gateway:
-            await gateway.stop()
-        scheduler.shutdown(wait=False)
-        conn.close()
+        await app.stop()
 
 
 def main() -> None:
