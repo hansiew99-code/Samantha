@@ -1,0 +1,45 @@
+"""Google OAuth: one desktop-flow consent (scripts/setup_auth.py) covering
+Calendar + Gmail; the refresh token persists at GOOGLE_TOKEN_PATH and is
+auto-refreshed here on load.
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+log = logging.getLogger(__name__)
+
+SCOPES = [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/gmail.modify",
+]
+
+
+def load_credentials(token_path: Path):
+    """Load stored credentials, refreshing if expired. Returns None when the
+    token file is absent/invalid (Google integration disabled)."""
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+
+    if not token_path.exists():
+        return None
+    try:
+        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            token_path.write_text(creds.to_json())
+        return creds
+    except Exception:
+        log.exception("failed to load google credentials from %s", token_path)
+        return None
+
+
+def run_consent_flow(credentials_path: Path, token_path: Path) -> None:
+    """Interactive one-time consent (used by scripts/setup_auth.py)."""
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), SCOPES)
+    creds = flow.run_local_server(port=0, open_browser=False)
+    token_path.write_text(creds.to_json())
+    print(f"Token saved to {token_path}")
