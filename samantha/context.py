@@ -27,6 +27,20 @@ def estimate_tokens(text: str) -> int:
     return len(text) // 4 + 1
 
 
+def assemble_base(memory: Memory) -> list[dict]:
+    """The stable, cached prefix: system prompt + core memory. Shared by chat,
+    sweeps, and digests so they all read the same cache entry."""
+    core = memory.core_block()
+    return [
+        {"type": "text", "text": SYSTEM_PROMPT},
+        {
+            "type": "text",
+            "text": f"# Core memory\n{core}",
+            "cache_control": {"type": "ephemeral"},
+        },
+    ]
+
+
 def assemble(
     memory: Memory,
     user_message: str,
@@ -39,15 +53,7 @@ def assemble(
     before and including it is byte-stable between calls; everything volatile
     comes after it or in messages.
     """
-    core = memory.core_block()
-    system_blocks: list[dict] = [
-        {"type": "text", "text": SYSTEM_PROMPT},
-        {
-            "type": "text",
-            "text": f"# Core memory\n{core}",
-            "cache_control": {"type": "ephemeral"},
-        },
-    ]
+    system_blocks = assemble_base(memory)
 
     now = datetime.now(ZoneInfo(tz))
     volatile_parts = [f"Current time: {now.strftime('%A %Y-%m-%d %H:%M')} ({tz})."]

@@ -1,15 +1,15 @@
-"""Application assembly: builds and wires every component. Later phases extend
-this in one place instead of rewriting the entrypoint.
+"""Application assembly: builds and wires every component. Each phase of the
+brief extends this in one place instead of rewriting the entrypoint.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from dataclasses import dataclass, field
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from .actions import PendingActions
@@ -17,19 +17,34 @@ from .brain import Brain
 from .callbacks import CallbackRouter
 from .config import Settings
 from .db import connect
+from .digests import DigestService
+from .events import EventBus, Sweeper
 from .governor import Governor
 from .integrations import google_auth
+from .integrations.clickup import ClickUpClient, ClickUpSync
 from .integrations.gcal import GCalClient
 from .integrations.gmail import GmailClient
+from .integrations.slack import SlackService
 from .memory import Memory
 from .reminders import ReminderService
+from .rules import RulesEngine
 from .telegram_gateway import TelegramGateway
 from .tools import ToolRegistry
-from .tools import calendar_tools, gmail_tools, memory_tools, reminder_tools
+from .tools import (
+    calendar_tools,
+    clickup_tools,
+    gmail_tools,
+    memory_tools,
+    reminder_tools,
+    rules_tools,
+    slack_tools,
+)
 
 log = logging.getLogger(__name__)
 
 GMAIL_POLL_MINUTES = 5
+CLICKUP_POLL_MINUTES = 10
+SWEEP_MINUTES = 30
 
 
 @dataclass
@@ -42,38 +57,39 @@ class App:
     governor: Governor = None
     reminders: ReminderService = None
     actions: PendingActions = None
+    rules: RulesEngine = None
+    bus: EventBus = None
+    sweeper: Sweeper | None = None
+    digests: DigestService | None = None
     brain: Brain | None = None
     gateway: TelegramGateway | None = None
     gcal: GCalClient | None = None
     gmail: GmailClient | None = None
+    slack: SlackService | None = None
+    clickup_sync: ClickUpSync | None = None
     callbacks: CallbackRouter = field(default_factory=CallbackRouter)
 
     async def start(self) -> None:
         self.scheduler.start()
         self.reminders.rehydrate()
+        if self.slack:
+            await asyncio.to_thread(self.slack.start)
         if self.gateway:
             await self.gateway.start()
 
     async def stop(self) -> None:
         if self.gateway:
             await self.gateway.stop()
+        if self.slack:
+            await asyncio.to_thread(self.slack.stop)
         self.scheduler.shutdown(wait=False)
         self.conn.close()
-
-    # -- helpers used by wiring ----------------------------------------------
 
     async def notify(self, text: str, reply_markup: InlineKeyboardMarkup | None = None) -> None:
         if self.gateway:
             await self.gateway.send(text, reply_markup=reply_markup)
         else:
             log.info("[no gateway] notify: %s", text)
-
-    def enqueue_event(self, source: str, kind: str, scope: str, payload: dict) -> None:
-        self.conn.execute(
-            "INSERT INTO events_queue(source, kind, scope, payload) VALUES (?, ?, ?, ?)",
-            (source, kind, scope, json.dumps(payload)),
-        )
-        self.conn.commit()
 
 
 def build_app(settings: Settings) -> App:
@@ -84,15 +100,22 @@ def build_app(settings: Settings) -> App:
     app.governor = Governor(app.conn, settings.daily_budget_usd)
     app.registry = ToolRegistry()
     app.actions = PendingActions(app.conn)
+    app.rules = RulesEngine(app.conn, app.memory)
+    app.bus = EventBus(app.conn, app.rules)
 
     _wire_reminders(app)
     memory_tools.register(app.registry, app.memory)
     reminder_tools.register(app.registry, app.reminders)
+    rules_tools.register(app.registry, app.rules)
     _wire_google(app)
+    _wire_slack(app)
+    _wire_clickup(app)
     _wire_approvals(app)
 
     if settings.anthropic_enabled:
         app.brain = Brain(settings, app.memory, app.registry, app.governor)
+
+    _wire_proactivity(app)
 
     if settings.telegram_enabled and not settings.dry_run:
         app.gateway = TelegramGateway(
@@ -154,11 +177,7 @@ def _wire_google(app: App) -> None:
     app.gcal = GCalClient(creds=creds, tz=settings.timezone)
     app.gmail = GmailClient(creds=creds)
     calendar_tools.register(app.registry, app.gcal, settings.timezone)
-
-    async def notify_draft(action_id: int, preview: str) -> None:
-        await app.notify(preview, reply_markup=_approval_keyboard(action_id))
-
-    gmail_tools.register(app.registry, app.gmail, app.actions, notify_draft)
+    gmail_tools.register(app.registry, app.gmail, app.actions, _draft_notifier(app))
 
     async def gmail_send_executor(payload: dict) -> str:
         if settings.dry_run:
@@ -179,17 +198,85 @@ def _wire_google(app: App) -> None:
             log.exception("gmail poll failed")
             return
         for msg in new:
-            app.enqueue_event("gmail", "new_email", msg.get("from", "*"), msg)
+            app.bus.enqueue("gmail", "new_email", msg.get("from", "*"), msg)
         if new:
             log.info("gmail: %d new message(s) enqueued", len(new))
 
-    app.scheduler.add_job(
-        poll_gmail, "interval", minutes=GMAIL_POLL_MINUTES, id="gmail-poll"
-    )
+    app.scheduler.add_job(poll_gmail, "interval", minutes=GMAIL_POLL_MINUTES, id="gmail-poll")
     log.info("google: calendar + gmail enabled")
 
 
+# -- slack --------------------------------------------------------------------
+
+
+def _wire_slack(app: App) -> None:
+    settings = app.settings
+    if not settings.slack_enabled:
+        log.info("slack: disabled")
+        return
+    app.slack = SlackService(settings.slack_bot_token, settings.slack_app_token, app.bus)
+    slack_tools.register(app.registry, app.conn, app.actions, _draft_notifier(app))
+
+    async def slack_send_executor(payload: dict) -> str:
+        if settings.dry_run:
+            log.info("[dry-run] slack send: %s", payload)
+            return "Dry run — message not actually posted."
+        await asyncio.to_thread(app.slack.post_message, payload["channel"], payload["text"])
+        return f"Posted to {payload['channel']} ✓"
+
+    app.actions.register_executor("slack_send", slack_send_executor)
+    log.info("slack: enabled (socket mode)")
+
+
+# -- clickup ------------------------------------------------------------------
+
+
+def _wire_clickup(app: App) -> None:
+    settings = app.settings
+    if not settings.clickup_enabled:
+        log.info("clickup: disabled")
+        return
+    client = ClickUpClient(settings.clickup_api_token, settings.clickup_team_id)
+    app.clickup_sync = ClickUpSync(client, app.conn, app.bus)
+    clickup_tools.register(app.registry, app.conn, client, app.clickup_sync)
+    app.scheduler.add_job(
+        app.clickup_sync.poll, "interval", minutes=CLICKUP_POLL_MINUTES, id="clickup-poll"
+    )
+    log.info("clickup: enabled")
+
+
+# -- proactivity: sweeps + digests -------------------------------------------
+
+
+def _wire_proactivity(app: App) -> None:
+    settings = app.settings
+    app.sweeper = Sweeper(settings, app.bus, app.memory, app.brain, app.notify)
+    app.digests = DigestService(
+        settings, app.memory, app.bus, app.brain, app.notify, gcal=app.gcal, conn=app.conn
+    )
+    app.scheduler.add_job(
+        app.sweeper.run_sweep, "interval", minutes=SWEEP_MINUTES, id="sweep"
+    )
+    app.scheduler.add_job(
+        app.digests.morning,
+        CronTrigger(hour=settings.morning_digest.hour, minute=settings.morning_digest.minute),
+        id="digest-morning",
+    )
+    app.scheduler.add_job(
+        app.digests.evening,
+        CronTrigger(hour=settings.evening_digest.hour, minute=settings.evening_digest.minute),
+        id="digest-evening",
+    )
+
+
 # -- outbound approval gate ---------------------------------------------------
+
+
+def _draft_notifier(app: App):
+    async def notify_draft(action_id: int, preview: str) -> None:
+        await app.notify(preview, reply_markup=_approval_keyboard(action_id))
+
+    return notify_draft
 
 
 def _approval_keyboard(action_id: int) -> InlineKeyboardMarkup:

@@ -106,7 +106,8 @@ CREATE TABLE IF NOT EXISTS events_queue (
     scope        TEXT NOT NULL DEFAULT '*',         -- sender/channel/list — matched against rules
     payload      TEXT NOT NULL,                     -- JSON
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-    processed_at TEXT
+    processed_at TEXT,
+    disposition  TEXT                               -- notified|digest|ignored|suppressed
 );
 
 CREATE TABLE IF NOT EXISTS spend_log (
