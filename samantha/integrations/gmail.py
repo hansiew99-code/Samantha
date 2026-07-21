@@ -100,28 +100,41 @@ class GmailClient:
             profile = svc.users().getProfile(userId="me").execute()
             kv_set(conn, HISTORY_KEY, str(profile["historyId"]))
             return []
-        try:
-            resp = (
-                svc.users()
-                .history()
-                .list(userId="me", startHistoryId=history_id,
-                      historyTypes=["messageAdded"], labelId="INBOX")
-                .execute()
-            )
-        except Exception as exc:  # expired historyId (404) → re-prime
-            log.warning("gmail history expired (%s); re-priming", exc)
-            profile = svc.users().getProfile(userId="me").execute()
-            kv_set(conn, HISTORY_KEY, str(profile["historyId"]))
-            return []
-
+        # Page through the full history. Only advance the cursor after every
+        # page has been read: if any page fails mid-way we discard the partial
+        # result and retry from the same cursor next cycle, so a busy inbox
+        # never loses messages and never double-advances past unread history.
         new_ids: list[str] = []
-        for record in resp.get("history", []):
-            for added in record.get("messagesAdded", []):
-                labels = added.get("message", {}).get("labelIds", [])
-                if "INBOX" in labels and "DRAFT" not in labels and "SENT" not in labels:
-                    new_ids.append(added["message"]["id"])
-        if "historyId" in resp:
-            kv_set(conn, HISTORY_KEY, str(resp["historyId"]))
+        latest_history_id: str | None = None
+        page_token: str | None = None
+        while True:
+            params: dict = dict(
+                userId="me", startHistoryId=history_id,
+                historyTypes=["messageAdded"], labelId="INBOX",
+            )
+            if page_token:
+                params["pageToken"] = page_token
+            try:
+                resp = svc.users().history().list(**params).execute()
+            except Exception as exc:
+                if page_token is None:  # first page failed → expired cursor, re-prime
+                    log.warning("gmail history expired (%s); re-priming", exc)
+                    profile = svc.users().getProfile(userId="me").execute()
+                    kv_set(conn, HISTORY_KEY, str(profile["historyId"]))
+                else:  # mid-pagination failure → discard, retry same cursor next run
+                    log.warning("gmail history page fetch failed (%s); retrying next cycle", exc)
+                return []
+            for record in resp.get("history", []):
+                for added in record.get("messagesAdded", []):
+                    labels = added.get("message", {}).get("labelIds", [])
+                    if "INBOX" in labels and "DRAFT" not in labels and "SENT" not in labels:
+                        new_ids.append(added["message"]["id"])
+            latest_history_id = resp.get("historyId", latest_history_id)
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+        if latest_history_id:
+            kv_set(conn, HISTORY_KEY, str(latest_history_id))
 
         events = []
         for mid in dict.fromkeys(new_ids):  # dedupe, keep order

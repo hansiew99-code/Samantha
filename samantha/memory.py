@@ -11,6 +11,8 @@ import re
 import sqlite3
 from dataclasses import dataclass
 
+from .redaction import redact
+
 _TOKEN_RE = re.compile(r"[A-Za-z0-9']+")
 _STOPWORDS = frozenset(
     "a an the i me my you your it is are was were be to of in on at for and or "
@@ -155,9 +157,11 @@ class Memory:
     # -- conversation log ----------------------------------------------------
 
     def log_message(self, role: str, content: str, channel: str = "telegram") -> None:
+        # Redact any pasted credential before it becomes durable history that
+        # would otherwise be replayed into future prompts and consolidation.
         self.conn.execute(
             "INSERT INTO messages(role, content, channel) VALUES (?, ?, ?)",
-            (role, content, channel),
+            (role, redact(content), channel),
         )
         self.conn.commit()
 

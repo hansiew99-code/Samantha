@@ -74,7 +74,7 @@ class App:
     async def start(self) -> None:
         self.scheduler.start()
         self.reminders.rehydrate()
-        if self.slack:
+        if self.slack and not self.settings.dry_run:
             await asyncio.to_thread(self.slack.start)
         if self.gateway:
             await self.gateway.start()
@@ -206,7 +206,8 @@ def _wire_google(app: App) -> None:
         if new:
             log.info("gmail: %d new message(s) enqueued", len(new))
 
-    app.scheduler.add_job(poll_gmail, "interval", minutes=GMAIL_POLL_MINUTES, id="gmail-poll")
+    if not settings.dry_run:
+        app.scheduler.add_job(poll_gmail, "interval", minutes=GMAIL_POLL_MINUTES, id="gmail-poll")
     log.info("google: calendar + gmail enabled")
 
 
@@ -243,9 +244,10 @@ def _wire_clickup(app: App) -> None:
     client = ClickUpClient(settings.clickup_api_token, settings.clickup_team_id)
     app.clickup_sync = ClickUpSync(client, app.conn, app.bus)
     clickup_tools.register(app.registry, app.conn, client, app.clickup_sync)
-    app.scheduler.add_job(
-        app.clickup_sync.poll, "interval", minutes=CLICKUP_POLL_MINUTES, id="clickup-poll"
-    )
+    if not settings.dry_run:
+        app.scheduler.add_job(
+            app.clickup_sync.poll, "interval", minutes=CLICKUP_POLL_MINUTES, id="clickup-poll"
+        )
     log.info("clickup: enabled")
 
 
@@ -258,6 +260,8 @@ def _wire_proactivity(app: App) -> None:
     app.digests = DigestService(
         settings, app.memory, app.bus, app.brain, app.notify, gcal=app.gcal, conn=app.conn
     )
+    if settings.dry_run:
+        return  # sweeps and digests call the LLM — no background spend in a dry run
     app.scheduler.add_job(
         app.sweeper.run_sweep, "interval", minutes=SWEEP_MINUTES, id="sweep"
     )
@@ -277,7 +281,7 @@ def _wire_proactivity(app: App) -> None:
 
 
 def _wire_consolidation(app: App) -> None:
-    if not app.settings.anthropic_enabled:
+    if not app.settings.anthropic_enabled or app.settings.dry_run:
         return
     app.consolidator = Consolidator(
         app.settings, app.conn, app.memory, app.governor

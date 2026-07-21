@@ -68,8 +68,8 @@ class Brain:
         return self.governor.max_tier()
 
     async def handle_message(self, text: str) -> str:
-        self.memory.log_message("user", text)
         if self.governor.mode() == DETERMINISTIC:
+            self.memory.log_message("user", text)
             reply = (
                 "I've hit today's token budget, so I'm resting my brain until "
                 "midnight — reminders still fire and I'm still collecting "
@@ -78,6 +78,9 @@ class Brain:
             self.memory.log_message("assistant", reply)
             return reply
         model = pick_model(text, max_tier=self.max_tier())
+        # Build context BEFORE logging this turn: otherwise recent_messages
+        # pulls in the message we just logged AND assemble appends it again,
+        # sending every user message to Claude twice.
         system, messages = assemble(self.memory, text, self.settings.timezone)
         try:
             reply = await self.run_loop(model, system, messages, purpose="chat")
@@ -87,6 +90,7 @@ class Brain:
                 "Something went wrong reaching my brain just now — I've logged "
                 "it. Try me again in a moment?"
             )
+        self.memory.log_message("user", text)
         self.memory.log_message("assistant", reply)
         return reply
 
