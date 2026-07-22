@@ -16,8 +16,12 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 SCOPES = [
-    "https://www.googleapis.com/auth/calendar",
-    "https://www.googleapis.com/auth/gmail.modify",
+    # Least privilege for the operations Samantha actually implements.  The
+    # old `calendar` + `gmail.modify` pair granted broader access than needed.
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.freebusy",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/chat.spaces.readonly",
     "https://www.googleapis.com/auth/chat.messages.readonly",
 ]
@@ -36,6 +40,7 @@ def load_credentials(token_path: Path):
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
             token_path.write_text(creds.to_json())
+            token_path.chmod(0o600)
         return creds
     except Exception:
         log.exception("failed to load google credentials from %s", token_path)
@@ -54,4 +59,5 @@ def run_consent_flow(credentials_path: Path, token_path: Path, port: int = 0) ->
     flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), SCOPES)
     creds = flow.run_local_server(port=port, open_browser=False)
     token_path.write_text(creds.to_json())
+    token_path.chmod(0o600)
     print(f"Token saved to {token_path}")

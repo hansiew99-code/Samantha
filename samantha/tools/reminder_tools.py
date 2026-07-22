@@ -37,8 +37,9 @@ def register(registry: ToolRegistry, reminders: ReminderService) -> None:
             "they will receive at fire time (it is delivered verbatim, "
             "without you). `due_at` is ISO-8601 local time, e.g. "
             "'2026-07-22T18:00'. For repeating reminders pass `recurrence` "
-            "as a 5-field cron expression (e.g. '0 9 * * 1' = Mondays 9am) "
-            "and set due_at to the first occurrence."
+            "as a 5-field APScheduler cron expression (weekday 0 is Monday; "
+            "e.g. '0 9 * * 0' = Mondays 9am) and set due_at to the earliest "
+            "date the recurrence may begin."
         ),
         input_schema={
             "type": "object",

@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from ..db import kv_get, kv_set
+from ..db import record_sync_failure, record_sync_success
 from ..events import EventBus
 
 log = logging.getLogger(__name__)
@@ -31,19 +31,44 @@ class ClickUpClient:
         return {"Authorization": self.token}
 
     async def fetch_open_tasks(self) -> list[dict]:
+        raw_tasks: list[dict] = []
+        page = 0
+        page_signatures: set[tuple[str, ...]] = set()
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(
-                f"{BASE}/team/{self.team_id}/task",
-                headers=self._headers(),
-                params={"include_closed": "false", "subtasks": "true"},
-            )
-            resp.raise_for_status()
+            while True:
+                resp = await client.get(
+                    f"{BASE}/team/{self.team_id}/task",
+                    headers=self._headers(),
+                    params={
+                        "include_closed": "false",
+                        "subtasks": "true",
+                        "page": page,
+                    },
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                page_tasks = payload.get("tasks", [])
+                signature = tuple(sorted(str(task.get("id", "")) for task in page_tasks))
+                if page_tasks and signature in page_signatures:
+                    # Fail closed: if ClickUp ignores `page`, returning partial
+                    # data must not let the sync tombstone unseen open tasks.
+                    raise RuntimeError("ClickUp task pagination did not advance")
+                page_signatures.add(signature)
+                raw_tasks.extend(page_tasks)
+                if payload.get("last_page") is True or not page_tasks:
+                    break
+                page += 1
         out = []
-        for t in resp.json().get("tasks", []):
+        seen: set[str] = set()
+        for t in raw_tasks:
+            task_id = str(t["id"])
+            if task_id in seen:
+                continue
+            seen.add(task_id)
             due_ms = t.get("due_date")
             out.append(
                 {
-                    "id": t["id"],
+                    "id": task_id,
                     "name": t.get("name", "(untitled)"),
                     "status": (t.get("status") or {}).get("status", "open"),
                     "due_at": (
@@ -76,12 +101,13 @@ class ClickUpSync:
         self.conn = conn
         self.bus = bus
 
-    async def poll(self) -> None:
+    async def poll(self) -> bool:
         try:
             tasks = await self.client.fetch_open_tasks()
-        except Exception:
+        except Exception as exc:
+            record_sync_failure(self.conn, "clickup", exc)
             log.exception("clickup poll failed")
-            return
+            return False
 
         open_ids = set()
         for t in tasks:
@@ -112,10 +138,11 @@ class ClickUpSync:
             if not t["due_at"]:
                 continue
             due = datetime.fromisoformat(t["due_at"])
-            key = f"clickup.due_notified.{t['id']}"
-            if now <= due <= now + DUE_SOON and kv_get(self.conn, key) is None:
-                kv_set(self.conn, key, now.isoformat())
+            if now <= due <= now + DUE_SOON:
                 self.bus.enqueue(
                     "clickup", "due_soon", t["list"] or "*",
                     {"title": t["name"], "due_at": t["due_at"], "url": t["url"], "id": t["id"]},
+                    dedupe_key=f"clickup:due:{t['id']}:{t['due_at']}",
                 )
+        record_sync_success(self.conn, "clickup")
+        return True

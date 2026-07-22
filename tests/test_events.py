@@ -125,9 +125,59 @@ async def test_vip_notification_gets_flagged(settings, conn, memory, bus):
     assert notifications == ["❗ Boss wants a call"]
 
 
+async def test_sweep_bundles_multiple_interruptions_and_supplies_time_context(
+    settings, conn, memory, bus
+):
+    bus.enqueue(
+        "gmail",
+        "new_email",
+        "sarah@example.com",
+        {
+            "subject": "Deck due today",
+            "snippet": "Can you review before 4?",
+            "internal_date": "1784698200000",
+        },
+    )
+    bus.enqueue(
+        "gchat",
+        "new_message",
+        "Marcus",
+        {"text": "Client is waiting", "create_time": "2026-07-22T10:00:00Z"},
+    )
+    notifications: list[str] = []
+    script = [FakeResponse(content=[text_block(decisions_json(
+        {"i": 0, "action": "notify", "message": "Sarah needs the deck by 4."},
+        {"i": 1, "action": "notify", "message": "Marcus says the client's waiting."},
+    ))])]
+    sweeper, client = make_sweeper(
+        settings, conn, memory, bus, script, notifications
+    )
+
+    await sweeper.run_sweep()
+
+    assert len(notifications) == 1
+    assert "1. Sarah" in notifications[0] and "2. Marcus" in notifications[0]
+    payload = json.loads(client.calls[0]["messages"][0]["content"])
+    assert payload["now"] and payload["timezone"] == TZ
+    assert payload["events"][0]["subject"] == "Deck due today"
+    assert payload["events"][0]["source_time"]
+
+
 def test_in_quiet_hours_wraps_midnight():
     quiet = (time(23, 0), time(7, 0))
     tz = ZoneInfo(TZ)
     assert in_quiet_hours(datetime(2026, 7, 21, 23, 30, tzinfo=tz), quiet)
     assert in_quiet_hours(datetime(2026, 7, 21, 3, 0, tzinfo=tz), quiet)
     assert not in_quiet_hours(datetime(2026, 7, 21, 12, 0, tzinfo=tz), quiet)
+
+
+def test_provider_event_dedupe_is_idempotent(bus, conn):
+    first = bus.enqueue(
+        "slack", "mention", "C123", {"text": "hello"}, dedupe_key="slack:Ev1"
+    )
+    second = bus.enqueue(
+        "slack", "mention", "C123", {"text": "hello again"}, dedupe_key="slack:Ev1"
+    )
+
+    assert second == first
+    assert conn.execute("SELECT COUNT(*) FROM events_queue").fetchone()[0] == 1

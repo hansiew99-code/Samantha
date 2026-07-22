@@ -77,7 +77,7 @@ This one needs a browser for the login step, so part of it happens on your
 2. Enable Calendar API: **https://console.cloud.google.com/apis/library/calendar-json.googleapis.com** → **Enable**.
 3. Enable Gmail API: **https://console.cloud.google.com/apis/library/gmail.googleapis.com** → **Enable**.
 3b. *(only if you want Google Chat too)* Enable Chat API: **https://console.cloud.google.com/apis/library/chat.googleapis.com** → **Enable**.
-4. Consent screen: **https://console.cloud.google.com/apis/credentials/consent** → **External** → app name + your email → on **Test users**, **Add** your own Gmail address → save. (Leave it in "Testing" — no need to publish.)
+4. Consent screen: **https://console.cloud.google.com/apis/credentials/consent**. For an eligible Google Workspace, use **Internal**. For a personal account, choose **External**, add yourself during setup, then move the app's publishing status to **In production** before relying on Samantha continuously. External apps left in **Testing** can receive seven-day refresh tokens for these non-basic scopes. A personal unverified app may still show Google's warning; only continue for the project you created yourself. If Google later reports `invalid_grant`, check publishing status and run the consent flow again.
 5. Create the client: **https://console.cloud.google.com/apis/credentials** → **Create Credentials** → **OAuth client ID** → Application type **Desktop app** → **Create** → **Download JSON**.
 
 ### Part B — turn that JSON into a login token (on your laptop, needs a browser)
@@ -85,21 +85,27 @@ This one needs a browser for the login step, so part of it happens on your
 ```bash
 pip install google-auth-oauthlib
 python3 - <<'PY'
+import os
 from google_auth_oauthlib.flow import InstalledAppFlow
-SCOPES = ["https://www.googleapis.com/auth/calendar",
-          "https://www.googleapis.com/auth/gmail.modify",
+SCOPES = ["https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar.freebusy",
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.send",
           # keep the next two only if you enabled the Chat API in step 3b:
           "https://www.googleapis.com/auth/chat.spaces.readonly",
           "https://www.googleapis.com/auth/chat.messages.readonly"]
 creds = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES).run_local_server(port=0)
 open("google_token.json", "w").write(creds.to_json())
+os.chmod("google_token.json", 0o600)
 print("wrote google_token.json")
 PY
 ```
 A browser tab opens → approve. You'll see **"Google hasn't verified this app"** → **Advanced** → **Go to samantha (unsafe)** → **Allow**. That's expected for a personal app. It writes `google_token.json`.
 
 ### Part C — copy the token to the server
-7. On your laptop, print the token as base64 (safe to paste):
+7. On your laptop, encode the token as base64 for reliable transport. Base64
+is **not encryption**: anyone who sees it can recover the OAuth token, so only
+move it through a trusted private channel and clear it from clipboard/history:
 ```bash
 base64 google_token.json      # copy ALL the output
 ```
@@ -108,6 +114,7 @@ base64 google_token.json      # copy ALL the output
 base64 -d > ~/samantha/google_token.json <<'B64'
 <paste all the base64 lines here>
 B64
+chmod 600 ~/samantha/google_token.json
 sudo systemctl restart samantha
 ```
 
@@ -138,31 +145,33 @@ base64 client_secret_XXX.json          # copy all output
 base64 -d > ~/samantha/google_credentials.json <<'B64'
 <paste>
 B64
+chmod 600 ~/samantha/google_credentials.json
 ```
 
 **3. Re-mint the token with the Chat scopes.** The consent step needs a browser,
 and the redirect comes back to `localhost` — so on a headless VPS, SSH-forward a
-port first, then run the helper (it already knows all four scopes):
+port first, then run the helper (it requests all six least-privilege scopes):
 ```bash
 # reconnect to the VPS forwarding a port:
 ssh -L 8765:localhost:8765 you@your-vps
 cd ~/samantha
 .venv/bin/python scripts/setup_auth.py --port 8765
 ```
-Open the printed URL in your laptop browser, approve **all four** permissions
-(Calendar, Gmail, + two Chat "view" ones). The token is rewritten in place on
+Open the printed URL in your laptop browser, approve **all six** scopes
+(two Calendar, two Gmail, and two read-only Chat scopes). The token is rewritten in place on
 the VPS — nothing to copy.
 
-**4. Turn it on:**
+**4. Set your own Chat user ID, then turn it on.** This is required so
+Samantha never mistakes your own messages for incoming work:
+Use the Google Chat API Explorer to list messages in a space where you have
+posted, find one of your messages, and copy its `sender.name` value
+(`users/<id>`).
 ```bash
+.venv/bin/python scripts/set_secret.py GCHAT_SELF_ID       # enter: users/<id>
 .venv/bin/python scripts/set_secret.py GCHAT_ENABLED      # enter: 1
 sudo systemctl restart samantha
 .venv/bin/python -m samantha --check-config                # expect: google chat: ok
 ```
-
-**5.** *(optional)* Stop your own messages echoing back: send yourself anything
-on Chat, check `journalctl -u samantha -n 40 | grep gchat`, note your
-`users/<id>`, then `set_secret.py GCHAT_SELF_ID` with that value.
 
 **Test:** have someone message you on Google Chat, then Telegram → "any Google
 Chat messages I should see?"

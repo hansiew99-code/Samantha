@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from ..db import sync_status
 from ..integrations.clickup import ClickUpClient, ClickUpSync
 from .registry import Tool, ToolRegistry
 
@@ -15,16 +16,26 @@ def register(
     sync: ClickUpSync,
 ) -> None:
     async def clickup_list_tasks(refresh: bool = False) -> str:
+        warning = ""
         if refresh:
-            await sync.poll()
+            refreshed = await sync.poll()
+            if not refreshed:
+                status = sync_status(conn, "clickup")
+                warning = (
+                    "⚠️ ClickUp's live refresh failed; the tasks below are cached"
+                    + (f" from {status['last_success']}" if status["last_success"] else " with no recorded successful sync")
+                    + ".\n"
+                )
         rows = conn.execute(
             "SELECT external_id, title, due_at, status FROM tasks "
             "WHERE source = 'clickup' AND status = 'open' "
             "ORDER BY due_at IS NULL, due_at LIMIT 25"
         ).fetchall()
         if not rows:
-            return "No open ClickUp tasks."
-        return "\n".join(
+            return warning + (
+                "No cached open ClickUp tasks." if warning else "No open ClickUp tasks."
+            )
+        return warning + "\n".join(
             f"[{r['external_id']}] {r['title']}"
             + (f" — due {r['due_at']}" if r["due_at"] else "")
             for r in rows

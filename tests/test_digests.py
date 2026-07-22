@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import pytest
 
 from samantha.brain import Brain
@@ -38,6 +39,7 @@ class FakeChat:
     def __init__(self, results: list[dict]) -> None:
         self.results = results
         self.calls: list[str] = []
+        self.last_read_complete = True
 
     def recent_inbound(self, since_iso: str, per_space: int = 5) -> list[dict]:
         self.calls.append(since_iso)
@@ -139,11 +141,97 @@ async def test_evening_nothing_suppresses_push(settings, conn, memory, bus):
 
 
 async def test_digest_consumes_pending_backlog(settings, conn, memory, bus):
-    bus.enqueue("slack", "mention", "C123", {"text": "ping"})
+    eid = bus.enqueue("slack", "mention", "C123", {"text": "ping"})
+    assert eid is not None
     notifications: list[str] = []
-    script = [FakeResponse(content=[text_block("Brief.")])]
+    script = [FakeResponse(content=[text_block(json.dumps({
+        "message": "Brief.", "included_event_ids": [eid]
+    }))])]
     digests, _ = make_digests(settings, conn, memory, bus, script, notifications)
 
     await digests.morning()
 
     assert bus.pending() == []  # swept into the digest, marked processed
+    assert bus.digest_backlog() == []  # and does not repeat in the next brief
+
+
+async def test_digest_consumes_items_previously_marked_for_digest(
+    settings, conn, memory, bus
+):
+    eid = bus.enqueue("gmail", "new_email", "a@b.c", {"subject": "One-time item"})
+    assert eid is not None
+    bus.mark(eid, "digest")
+    assert len(bus.digest_backlog()) == 1
+
+    notifications: list[str] = []
+    script = [FakeResponse(content=[text_block(json.dumps({
+        "message": "One thing from your inbox.", "included_event_ids": [eid]
+    }))])]
+    digests, _ = make_digests(settings, conn, memory, bus, script, notifications)
+
+    await digests.morning()
+
+    assert bus.digest_backlog() == []
+    row = conn.execute(
+        "SELECT disposition FROM events_queue WHERE id = ?", (eid,)
+    ).fetchone()
+    assert row["disposition"] == "digested"
+
+
+async def test_digest_only_consumes_backlog_rows_the_model_received(
+    settings, conn, memory, bus
+):
+    for i in range(30):
+        bus.enqueue("slack", "mention", "C123", {"text": f"item {i}"})
+    included = [row["id"] for row in bus.digest_backlog()[:25]]
+    notifications: list[str] = []
+    script = [FakeResponse(content=[text_block(json.dumps({
+        "message": "Here's the first batch.", "included_event_ids": included
+    }))])]
+    digests, _ = make_digests(settings, conn, memory, bus, script, notifications)
+
+    await digests.morning()
+
+    remaining = bus.digest_backlog()
+    assert len(remaining) == 5
+    assert all(row["processed_at"] is None for row in remaining)
+
+
+async def test_digest_does_not_consume_items_the_message_omits(
+    settings, conn, memory, bus
+):
+    eid = bus.enqueue("gmail", "new_email", "a@b.c", {"subject": "Keep me"})
+    notifications: list[str] = []
+    script = [FakeResponse(content=[text_block(json.dumps({
+        "message": "Your calendar is clear.", "included_event_ids": []
+    }))])]
+    digests, _ = make_digests(settings, conn, memory, bus, script, notifications)
+
+    await digests.morning()
+
+    assert [row["id"] for row in bus.digest_backlog()] == [eid]
+
+
+async def test_digest_refilters_backlog_after_suppression_rule_is_added(
+    settings, conn, memory, bus
+):
+    eid = bus.enqueue(
+        "gmail", "new_email", "noise@example.com", {"subject": "Do not surface"}
+    )
+    assert eid is not None
+    bus.rules.add("gmail", "suppress", scope="noise@example.com")
+
+    notifications: list[str] = []
+    script = [FakeResponse(content=[text_block(json.dumps({
+        "message": "NOTHING", "included_event_ids": []
+    }))])]
+    digests, client = make_digests(settings, conn, memory, bus, script, notifications)
+
+    await digests.morning()
+
+    payload = client.calls[0]["messages"][0]["content"]
+    assert "Do not surface" not in payload
+    row = conn.execute(
+        "SELECT disposition FROM events_queue WHERE id = ?", (eid,)
+    ).fetchone()
+    assert row["disposition"] == "suppressed"

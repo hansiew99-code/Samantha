@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "samantha"
-version = "0.1.0"
+version = "0.2.0"
 description = "A proactive, persistent-memory personal AI assistant. See BRIEF.md."
 requires-python = ">=3.11"
 dependencies = [
-    "anthropic>=0.50",
+    "anthropic>=0.117.1",
     "python-telegram-bot>=21.0",
     "APScheduler>=3.10,<4",
     "python-dotenv>=1.0",

@@ -7,15 +7,38 @@ from .registry import Tool, ToolRegistry
 
 
 def register(registry: ToolRegistry, memory: Memory) -> None:
-    def memory_save(subject: str, predicate: str, object: str) -> str:  # noqa: A002
-        fact_id = memory.save_fact(subject, predicate, object)
+    def memory_save(
+        subject: str,
+        predicate: str,
+        object: str,  # noqa: A002
+        replace_existing: bool = False,
+    ) -> str:
+        fact_id = memory.save_fact(
+            subject, predicate, object, replace_existing=replace_existing
+        )
         return f"Saved fact #{fact_id}: {subject} {predicate} {object}"
 
     def memory_search(query: str) -> str:
         facts = memory.search_facts(query, k=10)
-        if not facts:
+        messages = memory.search_messages(query, k=6)
+        if not facts and not messages:
             return "No stored memories match."
-        return "\n".join(f"- {f.render()} (source: {f.source})" for f in facts)
+        sections: list[str] = []
+        if facts:
+            sections.append(
+                "Stored facts:\n"
+                + "\n".join(f"- {f.render()} (source: {f.source})" for f in facts)
+            )
+        if messages:
+            sections.append(
+                "Matching conversation excerpts (newest first):\n"
+                + "\n".join(
+                    f"- {row['created_at']} {row['role']}: "
+                    f"{row['content'][:500]}"
+                    for row in messages
+                )
+            )
+        return "\n\n".join(sections)
 
     def people_save(
         name: str,
@@ -37,7 +60,10 @@ def register(registry: ToolRegistry, memory: Memory) -> None:
             "Store a durable fact about the owner or their world. Call this "
             "whenever the owner states something worth remembering — a "
             "preference, a plan, a deadline, a relationship, a habit. Facts "
-            "with the same subject+predicate supersede the old value. "
+            "By default facts accumulate, because a person can like or work on "
+            "several things. Set `replace_existing=true` only for a genuine "
+            "correction to one current value (timezone, employer, a changed "
+            "deadline). "
             "Example: subject='owner', predicate='prefers', object='meetings "
             "after 10am'."
         ),
@@ -47,6 +73,10 @@ def register(registry: ToolRegistry, memory: Memory) -> None:
                 "subject": {"type": "string", "description": "Who/what the fact is about; use 'owner' for the user."},
                 "predicate": {"type": "string", "description": "Short verb phrase, e.g. 'prefers', 'works at', 'is allergic to'."},
                 "object": {"type": "string", "description": "The value of the fact."},
+                "replace_existing": {
+                    "type": "boolean",
+                    "description": "True only when this fact replaces the previous value for the same subject and predicate.",
+                },
             },
             "required": ["subject", "predicate", "object"],
         },
@@ -56,9 +86,11 @@ def register(registry: ToolRegistry, memory: Memory) -> None:
     registry.register(Tool(
         name="memory_search",
         description=(
-            "Search long-term memory beyond the auto-injected snippets. Call "
+            "Search long-term facts and the durable conversation ledger beyond "
+            "the auto-injected snippets. Call "
             "this when the owner references something from the past that is "
-            "not in your current context, before saying you don't know."
+            "not in your current context, including earlier today, before saying "
+            "you don't know. Results are bounded excerpts, not the whole history."
         ),
         input_schema={
             "type": "object",

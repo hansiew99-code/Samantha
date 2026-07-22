@@ -4,37 +4,84 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta
+from typing import Awaitable, Callable
 from zoneinfo import ZoneInfo
 
+from ..actions import PendingActions
 from ..integrations.gcal import GCalClient, find_free_slots
 from .registry import Tool, ToolRegistry
 
+NotifyDraft = Callable[[int, str], Awaitable[None]]
 
-def register(registry: ToolRegistry, gcal: GCalClient, tz: str, owner_email: str = "primary") -> None:
+
+def register(
+    registry: ToolRegistry,
+    gcal: GCalClient,
+    tz: str,
+    actions: PendingActions,
+    notify_draft: NotifyDraft,
+    owner_email: str = "primary",
+) -> None:
     zone = ZoneInfo(tz)
 
     async def calendar_list_events(start: str, end: str) -> str:
         events = await asyncio.to_thread(
-            gcal.list_events, _iso(start, zone), _iso(end, zone)
+            gcal.list_events, _iso(start, zone), _iso(end, zone), 21
         )
         if not events:
             return "No events in that window."
-        return "\n".join(
+        listing = "\n".join(
             f"[{e['id']}] {e['start']} → {e['end']}: {e['summary']}"
             + (f" @ {e['location']}" if e["location"] else "")
             + (f" (with {', '.join(e['attendees'])})" if e["attendees"] else "")
-            for e in events
+            for e in events[:20]
         )
+        if len(events) > 20:
+            listing += "\n[More than 20 events match; narrow the date window for the rest.]"
+        return listing
 
     async def calendar_create_event(
         summary: str, start: str, end: str,
         description: str | None = None, location: str | None = None,
         attendees: list[str] | None = None,
     ) -> str:
+        if attendees:
+            preview_lines = [
+                f"📅 Invite: {summary}",
+                f"{start} → {end}",
+                f"Guests: {', '.join(attendees)}",
+            ]
+            if location:
+                preview_lines.append(f"Location: {location}")
+            if description:
+                preview_lines.append(f"Description: {description}")
+            preview = "\n".join(preview_lines)
+            action_id = actions.create(
+                "calendar_create_with_attendees",
+                {
+                    "summary": summary,
+                    "start": _iso(start, zone),
+                    "end": _iso(end, zone),
+                    "description": description,
+                    "location": location,
+                    "attendees": attendees,
+                },
+                preview,
+            )
+            await notify_draft(action_id, preview)
+            return (
+                f"Calendar invite draft #{action_id} is ready for approval. "
+                "It has not been created or sent yet."
+            )
         ev = await asyncio.to_thread(
             gcal.create_event, summary, _iso(start, zone), _iso(end, zone),
             description, location, attendees,
         )
+        if ev.get("deduplicated"):
+            return (
+                f"That event already exists as {ev['id']}: {summary} "
+                f"({start} → {end}); I did not create a duplicate."
+            )
         return f"Created event {ev['id']}: {summary} ({start} → {end})."
 
     async def calendar_update_event(
@@ -52,12 +99,51 @@ def register(registry: ToolRegistry, gcal: GCalClient, tz: str, owner_email: str
             patch["description"] = description
         if location is not None:
             patch["location"] = location
-        ev = await asyncio.to_thread(gcal.update_event, event_id, **patch)
+        if not patch:
+            return "No calendar changes were requested."
+        current = await asyncio.to_thread(gcal.get_event, event_id)
+        attendees = current.get("attendees", [])
+        if attendees:
+            changes = ", ".join(f"{key}={value}" for key, value in patch.items())
+            preview = (
+                f"📅 Update: {current.get('summary', event_id)}\n"
+                f"Changes: {changes}\nGuests: {', '.join(attendees)}"
+            )
+            action_id = actions.create(
+                "calendar_update_with_attendees",
+                {"event_id": event_id, "patch": patch},
+                preview,
+            )
+            await notify_draft(action_id, preview)
+            return (
+                f"Calendar update #{action_id} is ready for approval. "
+                "The shared event has not been changed and guests have not been notified."
+            )
+        ev = await asyncio.to_thread(
+            gcal.update_event, event_id, send_updates=False, **patch
+        )
         return f"Updated event {ev['id']}."
 
     async def calendar_delete_event(event_id: str) -> str:
-        await asyncio.to_thread(gcal.delete_event, event_id)
-        return f"Deleted event {event_id}."
+        current = await asyncio.to_thread(gcal.get_event, event_id)
+        preview_lines = [
+            f"🗑 Delete calendar event: {current.get('summary', event_id)}",
+            f"When: {current.get('start') or '?'} → {current.get('end') or '?'}",
+        ]
+        if current.get("location"):
+            preview_lines.append(f"Location: {current['location']}")
+        if current.get("attendees"):
+            preview_lines.append(f"Guests notified: {', '.join(current['attendees'])}")
+        preview_lines.append(f"Event id: {event_id}")
+        preview = "\n".join(preview_lines)
+        action_id = actions.create(
+            "calendar_delete", {"event_id": event_id}, preview
+        )
+        await notify_draft(action_id, preview)
+        return (
+            f"Calendar deletion #{action_id} is waiting for approval. "
+            "Nothing has been deleted yet."
+        )
 
     async def calendar_find_slots(
         attendees: list[str], duration_minutes: int, window_start: str, window_end: str,
@@ -100,8 +186,10 @@ def register(registry: ToolRegistry, gcal: GCalClient, tz: str, owner_email: str
         name="calendar_create_event",
         description=(
             "Create an event on the owner's calendar. The owner's own calendar "
-            "is yours to manage — no approval needed. Datetimes are ISO-8601 "
-            "in the owner's timezone."
+            "is yours to manage with no approval when there are no attendees. "
+            "If attendees are present, this automatically creates an approval "
+            "draft because accepting it sends invitations to other people. "
+            "Datetimes are ISO-8601 in the owner's timezone."
         ),
         input_schema={
             "type": "object",
@@ -120,7 +208,12 @@ def register(registry: ToolRegistry, gcal: GCalClient, tz: str, owner_email: str
 
     registry.register(Tool(
         name="calendar_update_event",
-        description="Reschedule or edit an existing event by id (get ids from calendar_list_events).",
+        description=(
+            "Reschedule or edit an existing event by id (get ids from "
+            "calendar_list_events). Private events are changed immediately; "
+            "shared events with attendees automatically become a Telegram "
+            "approval draft before guests are affected."
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -138,7 +231,10 @@ def register(registry: ToolRegistry, gcal: GCalClient, tz: str, owner_email: str
 
     registry.register(Tool(
         name="calendar_delete_event",
-        description="Delete an event from the owner's calendar by id.",
+        description=(
+            "Prepare deletion of a calendar event by id. Deletion is destructive "
+            "and may notify attendees, so this always goes through one-tap approval."
+        ),
         input_schema={
             "type": "object",
             "properties": {"event_id": {"type": "string"}},

@@ -55,13 +55,36 @@ CREATE TABLE IF NOT EXISTS reminders (
     text       TEXT NOT NULL,                       -- pre-composed at creation; firing costs 0 tokens
     due_at     TEXT NOT NULL,                       -- ISO-8601 UTC
     recurrence TEXT,                                -- NULL = one-shot; else cron expression
-    status     TEXT NOT NULL DEFAULT 'scheduled',   -- scheduled|fired|done|snoozed|cancelled
+    status     TEXT NOT NULL DEFAULT 'scheduled',   -- scheduled|snoozed|delivering_*|fired|done|cancelled|invalid
+    delivery_version INTEGER NOT NULL DEFAULT 0,    -- invalidates stale Telegram buttons
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Conditional commitments: unlike a reminder, a watcher is cancelled when its
+-- real-world condition becomes true.  Example: "if Shyan hasn't emailed by EOD,
+-- remind me at 9 tomorrow" watches Gmail until 09:00 and only fires if the
+-- matching message still does not exist.
+CREATE TABLE IF NOT EXISTS watchers (
+    id                 INTEGER PRIMARY KEY,
+    description        TEXT NOT NULL,
+    source             TEXT NOT NULL,               -- gmail (extensible)
+    criteria           TEXT NOT NULL,               -- JSON, source-specific
+    expected_by        TEXT NOT NULL,               -- ISO-8601 UTC commitment deadline
+    notify_at          TEXT NOT NULL,               -- ISO-8601 UTC fallback time
+    fallback_text      TEXT NOT NULL,
+    late_text          TEXT,
+    deadline_policy    TEXT NOT NULL DEFAULT 'by_deadline', -- by_deadline|missing_at_notify
+    status             TEXT NOT NULL DEFAULT 'active', -- active|breached|delivering|resolved|fired|cancelled
+    breached_at        TEXT,
+    resolved_at        TEXT,
+    resolution_payload TEXT,                        -- JSON evidence/reference
+    created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS rules (
     id         INTEGER PRIMARY KEY,
-    source     TEXT NOT NULL,                       -- clickup|gmail|slack|calendar|*
+    source     TEXT NOT NULL,                       -- clickup|gmail|gchat|slack|calendar|*
     action     TEXT NOT NULL,                       -- suppress|vip|ignore_sender|...
     scope      TEXT NOT NULL DEFAULT '*',           -- channel name, sender, task list, or *
     detail     TEXT,                                -- JSON
@@ -75,6 +98,17 @@ CREATE TABLE IF NOT EXISTS messages (
     content    TEXT NOT NULL,
     channel    TEXT NOT NULL DEFAULT 'telegram',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Raw conversation is never deleted, but a repeatedly unsafe/malformed
+-- consolidation chunk is quarantined after bounded retries so it cannot
+-- starve every later memory forever.
+CREATE TABLE IF NOT EXISTS consolidation_quarantine (
+    id            INTEGER PRIMARY KEY,
+    checkpoint_id INTEGER NOT NULL UNIQUE,
+    reason        TEXT NOT NULL,
+    transcript    TEXT NOT NULL,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -94,13 +128,14 @@ CREATE TABLE IF NOT EXISTS pending_actions (
     kind        TEXT NOT NULL,                      -- gmail_send|slack_send
     payload     TEXT NOT NULL,                      -- JSON needed to execute
     preview     TEXT NOT NULL,                      -- what the user sees in Telegram
-    status      TEXT NOT NULL DEFAULT 'pending',    -- pending|sent|discarded|failed
+    status      TEXT NOT NULL DEFAULT 'pending',    -- pending|editing|executing|uncertain|sent|discarded
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     resolved_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS events_queue (
     id           INTEGER PRIMARY KEY,
+    dedupe_key   TEXT,                              -- provider event id for safe retries
     source       TEXT NOT NULL,                     -- gmail|slack|clickup|calendar|scheduler
     kind         TEXT NOT NULL,                     -- new_email|mention|due_soon|conflict|...
     scope        TEXT NOT NULL DEFAULT '*',         -- sender/channel/list — matched against rules
@@ -127,6 +162,7 @@ CREATE INDEX IF NOT EXISTS idx_spend_created ON spend_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_facts_current ON facts(superseded_by) WHERE superseded_by IS NULL;
 CREATE INDEX IF NOT EXISTS idx_events_unprocessed ON events_queue(processed_at) WHERE processed_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status);
+CREATE INDEX IF NOT EXISTS idx_watchers_active ON watchers(status, notify_at);
 
 CREATE TABLE IF NOT EXISTS integration_state (
     key        TEXT PRIMARY KEY,                    -- e.g. 'gmail.history_id', 'gcal.sync_token'

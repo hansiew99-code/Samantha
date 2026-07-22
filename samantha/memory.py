@@ -19,6 +19,12 @@ _STOPWORDS = frozenset(
     "do does did what when where who how can could would should with about".split()
 )
 
+# The core block is present on every model request.  Bound both individual
+# values and the rendered block so an enthusiastic stream of standing rules or
+# a bad migration can never turn long-term memory into an ever-growing prompt.
+CORE_VALUE_CHAR_LIMIT = 2_000
+CORE_BLOCK_CHAR_LIMIT = 5_800  # ~= 1,450 tokens with the local len/4 estimate
+
 
 @dataclass
 class Fact:
@@ -39,15 +45,54 @@ class Memory:
     # -- facts ---------------------------------------------------------------
 
     def save_fact(
-        self, subject: str, predicate: str, obj: str, source: str = "chat"
+        self,
+        subject: str,
+        predicate: str,
+        obj: str,
+        source: str = "chat",
+        *,
+        replace_existing: bool = False,
     ) -> int:
-        """Insert a fact. An existing *current* fact with the same subject +
-        predicate is superseded (kept on disk, excluded from retrieval)."""
-        cur = self.conn.execute(
-            "SELECT id FROM facts WHERE subject = ? AND predicate = ? AND superseded_by IS NULL",
-            (subject, predicate),
-        )
-        old_ids = [r["id"] for r in cur.fetchall()]
+        """Insert a durable fact without accidentally erasing multi-value facts.
+
+        ``replace_existing`` is deliberately opt-in.  Predicates such as
+        ``likes``, ``works on`` and ``knows`` may have several simultaneous
+        values; the previous implementation silently hid every earlier value.
+        Use replacement only for genuinely single-valued corrections such as a
+        timezone, current employer, or changed deadline.
+        """
+        subject = subject.strip()
+        predicate = predicate.strip()
+        obj = obj.strip()
+        if not subject or not predicate or not obj:
+            raise ValueError("fact subject, predicate, and object must be non-empty")
+        existing = self.conn.execute(
+            "SELECT id FROM facts WHERE lower(subject) = lower(?) "
+            "AND lower(predicate) = lower(?) AND lower(object) = lower(?) "
+            "AND superseded_by IS NULL ORDER BY id DESC LIMIT 1",
+            (subject, predicate, obj),
+        ).fetchone()
+        if existing is not None:
+            existing_id = int(existing["id"])
+            if replace_existing:
+                self.conn.execute(
+                    "UPDATE facts SET superseded_by = ? "
+                    "WHERE lower(subject) = lower(?) "
+                    "AND lower(predicate) = lower(?) AND id != ? "
+                    "AND superseded_by IS NULL",
+                    (existing_id, subject, predicate, existing_id),
+                )
+                self.conn.commit()
+            return existing_id
+
+        old_ids: list[int] = []
+        if replace_existing:
+            cur = self.conn.execute(
+                "SELECT id FROM facts WHERE lower(subject) = lower(?) "
+                "AND lower(predicate) = lower(?) AND superseded_by IS NULL",
+                (subject, predicate),
+            )
+            old_ids = [int(r["id"]) for r in cur.fetchall()]
         new_id = self.conn.execute(
             "INSERT INTO facts(subject, predicate, object, source) VALUES (?, ?, ?, ?)",
             (subject, predicate, obj, source),
@@ -97,15 +142,37 @@ class Memory:
 
     def core_block(self) -> str:
         """The always-in-context block. Rendered deterministically (sorted by
-        key) so identical state produces identical bytes → stable cache."""
+        key) so identical state produces identical bytes → stable cache.
+
+        The database may retain richer archival state, but this rendered slice
+        has a hard size ceiling.  Deterministic rules continue to be enforced
+        from the ``rules`` table even if their human-readable echo is clipped.
+        """
         rows = self.conn.execute(
             "SELECT key, content FROM core_memory ORDER BY key"
         ).fetchall()
         if not rows:
             return "(core memory is empty — a new relationship. Learn fast.)"
-        return "\n\n".join(f"## {r['key']}\n{r['content']}" for r in rows)
+        sections: list[str] = []
+        used = 0
+        for row in rows:
+            section = f"## {row['key']}\n{row['content']}"
+            separator = 2 if sections else 0
+            remaining = CORE_BLOCK_CHAR_LIMIT - used - separator
+            if remaining <= 1:
+                break
+            if len(section) > remaining:
+                section = section[: remaining - 1].rstrip() + "…"
+            sections.append(section)
+            used += separator + len(section)
+            if used >= CORE_BLOCK_CHAR_LIMIT:
+                break
+        return "\n\n".join(sections)
 
     def set_core(self, key: str, content: str) -> None:
+        content = content.strip()
+        if len(content) > CORE_VALUE_CHAR_LIMIT:
+            content = content[: CORE_VALUE_CHAR_LIMIT - 1].rstrip() + "…"
         self.conn.execute(
             """INSERT INTO core_memory(key, content, updated_at)
                VALUES (?, ?, datetime('now'))
@@ -167,8 +234,64 @@ class Memory:
 
     def recent_messages(self, limit: int = 20) -> list[sqlite3.Row]:
         rows = self.conn.execute(
-            "SELECT role, content FROM messages WHERE role IN ('user','assistant') "
+            "SELECT id, role, content, channel FROM messages "
+            "WHERE role IN ('user','assistant') "
             "ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return list(reversed(rows))
+
+    def recent_dialogue_messages(self, limit: int = 20) -> list[sqlite3.Row]:
+        """Recent owner/reactive turns, excluding unsolicited push traffic."""
+        rows = self.conn.execute(
+            "SELECT id, role, content, channel FROM messages "
+            "WHERE role IN ('user','assistant') AND channel != 'telegram_push' "
+            "ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return list(reversed(rows))
+
+    def recent_proactive_messages(self, limit: int = 2) -> list[sqlite3.Row]:
+        """Latest unacknowledged pushes, kept separately from dialogue.
+
+        Once any subsequent owner/reactive turn is recorded, an older push is
+        no longer repeated in every prompt.  Immediately before an owner says
+        “yes”, however, the push is still newer than the prior dialogue and is
+        available as the referent.
+        """
+        rows = self.conn.execute(
+            "SELECT id, role, content, channel FROM messages "
+            "WHERE role = 'assistant' AND channel = 'telegram_push' "
+            "AND id > COALESCE((SELECT MAX(id) FROM messages "
+            "WHERE channel != 'telegram_push'), 0) "
+            "ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return list(reversed(rows))
+
+    def search_messages(self, query: str, k: int = 6) -> list[sqlite3.Row]:
+        """Search the durable conversation ledger with a small bounded result.
+
+        This is the same-day safety net before nightly consolidation has turned
+        a useful statement into a typed fact.  Raw history stays on disk; only
+        short excerpts from the newest matching rows can re-enter context.
+        """
+        tokens = [
+            token
+            for token in _TOKEN_RE.findall(query.casefold())
+            if token not in _STOPWORDS and len(token) > 1
+        ][:8]
+        if not tokens:
+            return []
+        clauses = " OR ".join("lower(content) LIKE ? ESCAPE '\\'" for _ in tokens)
+        params = [f"%{self._escape_like(token)}%" for token in tokens]
+        return self.conn.execute(
+            f"SELECT role, content, channel, created_at FROM messages "
+            f"WHERE role IN ('user','assistant') AND ({clauses}) "
+            "ORDER BY id DESC LIMIT ?",
+            (*params, k),
+        ).fetchall()
+
+    @staticmethod
+    def _escape_like(value: str) -> str:
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

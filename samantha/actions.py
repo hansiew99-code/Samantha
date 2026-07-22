@@ -24,9 +24,18 @@ class PendingActions:
         self._executors[kind] = executor
 
     def create(self, kind: str, payload: dict, preview: str) -> int:
+        payload_json = json.dumps(payload, sort_keys=True)
+        existing = self.conn.execute(
+            "SELECT id FROM pending_actions WHERE kind = ? AND payload = ? "
+            "AND status IN ('pending','executing','uncertain') "
+            "ORDER BY id DESC LIMIT 1",
+            (kind, payload_json),
+        ).fetchone()
+        if existing is not None:
+            return int(existing["id"])
         aid = self.conn.execute(
             "INSERT INTO pending_actions(kind, payload, preview) VALUES (?, ?, ?)",
-            (kind, json.dumps(payload), preview),
+            (kind, payload_json, preview),
         ).lastrowid
         assert aid is not None
         self.conn.commit()
@@ -46,9 +55,10 @@ class PendingActions:
         executor = self._executors.get(row["kind"])
         if executor is None:
             return f"No executor for {row['kind']} — is that integration configured?"
-        # Claim before executing so a concurrent tap can't double-send.
+        # Claim before executing so a concurrent tap can't double-send.  The
+        # action is not labelled sent until its provider confirms success.
         claimed = self.conn.execute(
-            "UPDATE pending_actions SET status = 'sent', resolved_at = datetime('now') "
+            "UPDATE pending_actions SET status = 'executing' "
             "WHERE id = ? AND status = 'pending'",
             (action_id,),
         )
@@ -59,17 +69,50 @@ class PendingActions:
             outcome = await executor(json.loads(row["payload"]))
         except Exception as exc:  # noqa: BLE001
             log.exception("action %d failed", action_id)
+            # A timeout can happen after the provider accepted the request.  Do
+            # not invite a blind retry that could duplicate an email/invite.
             self.conn.execute(
-                "UPDATE pending_actions SET status = 'failed' WHERE id = ?", (action_id,)
+                "UPDATE pending_actions SET status = 'uncertain', "
+                "resolved_at = datetime('now') WHERE id = ?", (action_id,)
             )
             self.conn.commit()
-            return f"Sending failed: {exc}"
+            return (
+                f"I couldn't confirm action #{action_id}: {exc}. It may have "
+                "gone through, so I won't retry it blindly—check the provider first."
+            )
+        self.conn.execute(
+            "UPDATE pending_actions SET status = 'sent', "
+            "resolved_at = datetime('now') WHERE id = ? AND status = 'executing'",
+            (action_id,),
+        )
+        self.conn.commit()
         return outcome
+
+    def recover_inflight(self) -> int:
+        """A crash mid-send is ambiguous; quarantine it instead of re-sending."""
+        cur = self.conn.execute(
+            "UPDATE pending_actions SET status = 'uncertain', "
+            "resolved_at = datetime('now') WHERE status = 'executing'"
+        )
+        self.conn.commit()
+        if cur.rowcount:
+            log.warning("recovered %d ambiguous outbound action(s)", cur.rowcount)
+        return cur.rowcount
 
     def discard(self, action_id: int) -> bool:
         cur = self.conn.execute(
             "UPDATE pending_actions SET status = 'discarded', resolved_at = datetime('now') "
-            "WHERE id = ? AND status = 'pending'",
+            "WHERE id = ? AND status IN ('pending','uncertain')",
+            (action_id,),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def request_edit(self, action_id: int) -> bool:
+        """Invalidate the old Send button before asking for a redraft."""
+        cur = self.conn.execute(
+            "UPDATE pending_actions SET status = 'editing', "
+            "resolved_at = datetime('now') WHERE id = ? AND status = 'pending'",
             (action_id,),
         )
         self.conn.commit()
