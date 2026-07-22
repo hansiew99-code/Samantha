@@ -14,7 +14,7 @@ This patch fixes the failed replies shown in the 6:09 PM Telegram screenshot and
 - Every tool, including read-only lookups and the escalation helper, was marked strict. The production request therefore carried 22 strict tools, above Anthropic's documented limit of 20.
 - The catch-all turned that engineering failure into the canned line “Something went wrong reaching my brain … Try me again”, transferred the retry to the owner, and then let the failed turn erase the proactive message's referent.
 
-The fix reserves strict schemas for the 15 possible side-effecting tools, leaves reads and escalation non-strict, removes the unsupported range keywords while keeping the same runtime clamp, and validates every final provider bundle before a request leaves the process. The validator checks unsupported schema constraints plus Anthropic's current 20 strict-tool, 24 optional-parameter, and 16 union-parameter limits. See Anthropic's [strict tool use](https://platform.claude.com/docs/en/agents-and-tools/tool-use/strict-tool-use) and [structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs) documentation.
+The fix reserves strict schemas for four mutations that can immediately change an external provider, leaves local reversible mutations, approval-gated drafts, reads, and escalation non-strict, removes the unsupported range keywords while keeping the same runtime clamp, and validates every final provider bundle before a request leaves the process. Local mutations still pass through owner-authorization gates and deterministic runtime validation; approval-gated payloads still require their exact Telegram preview to be approved before execution. The validator checks unsupported schema constraints plus Anthropic's current 20 strict-tool, 24 optional-parameter, and 16 union-parameter limits. A deployment smoke call catches Anthropic's additional combined-grammar ceiling before production is restarted. See Anthropic's [strict tool use](https://platform.claude.com/docs/en/agents-and-tools/tool-use/strict-tool-use) and [structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs) documentation.
 
 ## Source answers that work without the model
 
@@ -51,7 +51,7 @@ Anthropic's current context guidance confirms that system text, message history,
 
 ## Verification
 
-- **251 tests pass locally**, including exact regressions for the screenshot's Reanne/Chat/Gmail question, zero model calls, provider schema limits, degraded Telegram delivery, proactive referent continuity, and banned robotic phrases.
+- **252 tests pass locally**, including exact regressions for the screenshot's Reanne/Chat/Gmail question, zero model calls, provider schema limits, degraded Telegram delivery, proactive referent continuity, and banned robotic phrases.
 - Full Ubuntu x86_64 tests, a real Anthropic tool-bundle smoke call, production service status, and post-restart logs are required before this entry is marked deployed.
 
 ## Still intentionally open

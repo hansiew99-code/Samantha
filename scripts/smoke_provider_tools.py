@@ -42,6 +42,11 @@ async def _run(env_file: Path) -> None:
             )
             validate_provider_tools(tools)
             strict_count = sum(tool.get("strict") is True for tool in tools)
+            print(
+                f"provider schema candidate: {len(tools)} tools, "
+                f"{strict_count} strict",
+                flush=True,
+            )
             reply = await app.brain.handle_message(
                 "Reply with exactly: schema ok. Do not call a tool."
             )
@@ -49,10 +54,7 @@ async def _run(env_file: Path) -> None:
                 raise RuntimeError("Anthropic rejected or failed the smoke request")
             if not str(getattr(reply, "text", reply)).strip():
                 raise RuntimeError("Anthropic returned an empty smoke response")
-            print(
-                f"provider schema accepted: {len(tools)} tools, "
-                f"{strict_count} strict"
-            )
+            print("provider schema accepted", flush=True)
         finally:
             app.conn.close()
 
@@ -72,4 +74,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -4,7 +4,13 @@ from samantha.brain import Brain
 from samantha.governor import Governor
 from samantha.replies import OwnerReply
 from samantha.tools import gchat_tools
-from samantha.tools.registry import Tool, ToolRegistry, validate_provider_tools
+from samantha.tools.registry import (
+    MUTATING_TOOLS,
+    STRICT_TOOLS,
+    Tool,
+    ToolRegistry,
+    validate_provider_tools,
+)
 
 from fakes import FakeAnthropicClient, FakeResponse, text_block
 
@@ -20,22 +26,41 @@ def _tool_spec(name: str, schema: dict, *, strict: bool = True) -> dict:
     return spec
 
 
-def test_only_mutating_tools_are_marked_strict():
+def test_only_high_impact_provider_mutations_are_marked_strict():
     read_tool = Tool(
         name="memory_search",
         description="Read memory.",
         input_schema={"type": "object", "properties": {}},
         func=lambda: "",
     ).spec()
-    mutating_tool = Tool(
+    local_mutation = Tool(
         name="memory_save",
         description="Save memory.",
         input_schema={"type": "object", "properties": {}},
         func=lambda: "",
     ).spec()
+    provider_mutation = Tool(
+        name="calendar_update_event",
+        description="Update a calendar event.",
+        input_schema={"type": "object", "properties": {}},
+        func=lambda: "",
+    ).spec()
 
     assert "strict" not in read_tool
-    assert mutating_tool["strict"] is True
+    assert "strict" not in local_mutation
+    assert provider_mutation["strict"] is True
+    assert STRICT_TOOLS <= MUTATING_TOOLS
+
+
+def test_approval_gated_draft_is_runtime_validated_but_not_strict():
+    draft = Tool(
+        name="gmail_draft_reply",
+        description="Create an approval-gated email draft.",
+        input_schema={"type": "object", "properties": {}},
+        func=lambda: "",
+    ).spec()
+
+    assert "strict" not in draft
 
 
 def test_registry_specs_pass_provider_contract():

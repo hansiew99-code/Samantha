@@ -78,6 +78,20 @@ MUTATING_TOOLS = frozenset({
     "slack_draft_reply",
 })
 
+# Strict grammar compilation is deliberately narrower than mutation policy.
+# Anthropic applies a combined grammar-complexity ceiling even when the public
+# 20/24/16 limits are satisfied.  Reserve it for provider-facing or destructive
+# payloads that can immediately change an external provider.  Local,
+# reversible mutations and approval-gated drafts still pass through owner-
+# authorization, deterministic Python validation, and (for drafts) an exact
+# Telegram preview before external execution.
+STRICT_TOOLS = frozenset({
+    "calendar_create_event",
+    "calendar_update_event",
+    "clickup_complete_task",
+    "clickup_update_task",
+})
+
 # These only create an immutable local draft; the verified Telegram owner must
 # still approve its exact payload before any external effect.
 APPROVAL_GATED_TOOLS = frozenset({
@@ -110,7 +124,7 @@ class Tool:
             "description": self.description,
             "input_schema": schema,
         }
-        if self.name in MUTATING_TOOLS:
+        if self.name in STRICT_TOOLS:
             spec["strict"] = True
         return spec
 

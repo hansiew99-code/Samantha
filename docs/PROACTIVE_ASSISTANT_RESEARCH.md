@@ -286,7 +286,7 @@ Trust is mostly lost through small operational failures: duplicate mutations, em
 
 **Implemented/partial:**
 
-- Mutation-critical tool schemas use `strict: true`; read-only tools and the local escalation helper remain non-strict. A preflight validator rejects unsupported structured-output constraints and enforces Anthropic's strict-tool/schema complexity limits before the API call. Runtime code still validates and clamps tool inputs. Anthropic documents strict tool use as grammar-constrained schema compliance; see [Strict tool use](https://platform.claude.com/docs/en/agents-and-tools/tool-use/strict-tool-use).
+- Four mutations that can immediately change an external provider use `strict: true`; local reversible mutations, approval-gated drafts, read-only tools, and escalation remain non-strict. Owner-authorization and deterministic runtime validation still guard every mutation, and approval-gated payloads cannot execute before their exact Telegram preview is approved. A preflight validator rejects unsupported structured-output constraints and enforces Anthropic's published strict-tool/schema limits before the API call; a real deployment smoke catches the provider's additional combined-grammar ceiling. Anthropic documents strict tool use as grammar-constrained schema compliance; see [Strict tool use](https://platform.claude.com/docs/en/agents-and-tools/tool-use/strict-tool-use).
 - Degraded model replies use a separate durable channel and do not acknowledge the proactive message they failed to answer. Only a successfully delivered reply/action closes that referent.
 - Reminder, watcher, and pending-action creation deduplicate identical retries.
 - A successful tool receipt becomes the fallback if the model's final prose is empty.
