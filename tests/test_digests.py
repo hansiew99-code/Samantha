@@ -20,14 +20,29 @@ def bus(conn, memory) -> EventBus:
     return EventBus(conn, RulesEngine(conn, memory))
 
 
-def make_digests(settings, conn, memory, bus, script, notifications):
+class FakeGmail:
+    """Just enough of GmailClient for the digest gather step."""
+
+    def __init__(self, results: list[dict]) -> None:
+        self.results = results
+        self.queries: list[str] = []
+
+    def search(self, query: str, max_results: int = 10) -> list[dict]:
+        self.queries.append(query)
+        return self.results
+
+
+def make_digests(settings, conn, memory, bus, script, notifications, gmail=None):
     client = FakeAnthropicClient(script)
     brain = Brain(settings, memory, ToolRegistry(), Governor(conn, 1.0), client=client)
 
     async def notify(text: str) -> None:
         notifications.append(text)
 
-    return DigestService(settings, memory, bus, brain, notify, gcal=None, conn=conn), client
+    return (
+        DigestService(settings, memory, bus, brain, notify, gcal=None, gmail=gmail, conn=conn),
+        client,
+    )
 
 
 async def test_morning_digest_one_sonnet_call(settings, conn, memory, bus):
@@ -49,6 +64,23 @@ async def test_morning_digest_one_sonnet_call(settings, conn, memory, bus):
     # The gathered data reached the model.
     payload = client.calls[0]["messages"][0]["content"]
     assert "Ship report" in payload and "Invoice" in payload
+
+
+async def test_morning_brief_actively_pulls_unread_email(settings, conn, memory, bus):
+    # The failure the owner complained about: a brief that never checks the
+    # inbox. The digest must query Gmail and feed the unread mail to the model.
+    gmail = FakeGmail(
+        [{"from": "sarah@x.com", "subject": "Deck review", "snippet": "can you look today?"}]
+    )
+    notifications: list[str] = []
+    script = [FakeResponse(content=[text_block("Morning — Sarah's still waiting on the deck.")])]
+    digests, client = make_digests(settings, conn, memory, bus, script, notifications, gmail=gmail)
+
+    await digests.morning()
+
+    assert gmail.queries and "is:unread" in gmail.queries[0]  # inbox actually checked
+    payload = client.calls[0]["messages"][0]["content"]
+    assert "Deck review" in payload  # and the unread mail reached the model
 
 
 async def test_evening_nothing_suppresses_push(settings, conn, memory, bus):

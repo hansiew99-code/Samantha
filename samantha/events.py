@@ -32,12 +32,22 @@ MAX_EVENTS_PER_SWEEP = 20
 Notify = Callable[[str], Awaitable[None]]
 
 SWEEP_INSTRUCTIONS = """\
-You are doing a background triage sweep — the owner has NOT messaged you; you \
-are deciding which of the queued events below deserve their attention right \
-now. Be protective of their focus: 'notify' only for things that are urgent, \
-time-sensitive today, or from someone marked important. Everything routine \
-goes to 'digest' (it will appear in the next morning/evening summary). Noise \
-goes to 'ignore'.
+You are doing a background triage sweep — the owner has NOT messaged you. \
+You're deciding which of the queued events below are worth a ping right now, \
+the way a sharp assistant who's actually watching their inbox and calendar \
+would.
+
+'notify' for what a good assistant would genuinely interrupt them for: someone \
+waiting on a reply, a same-day deadline or meeting, a scheduling conflict, \
+anything time-sensitive or from someone who matters to them. Write the notify \
+message like a person and point at the next step ("Sarah's waiting on the deck \
+— want me to draft a reply?"), not a bare alert.
+'digest' for things they'll want to know but not this second — it rolls into \
+the next morning/evening brief.
+'ignore' for real noise: newsletters, receipts, automated nothing.
+
+Lean toward being useful over being silent — but never cry wolf. A ping that \
+didn't need to happen costs you their trust.
 
 Reply with ONLY a JSON object, no prose:
 {"decisions": [{"i": <event index>, "action": "notify"|"digest"|"ignore", \

@@ -28,12 +28,51 @@ MODEL_PARAMS: dict[str, dict] = {
 
 _THINK_HARD_MARKERS = ("think hard", "think carefully", "think deeply", "take your time")
 
+# Requests that mean "go gather across my stuff and reason about it" — a brief,
+# a catch-up, a look spanning calendar + inbox + tasks. These are exactly the
+# asks where Haiku phones it in, answering from stale context instead of pulling
+# live data, so they start on Sonnet, which actually chains the tool calls.
+_GATHER_MARKERS = (
+    "brief",
+    "catch me up",
+    "catch up",
+    "fill me in",
+    "rundown",
+    "run down",
+    "recap",
+    "what's my day",
+    "whats my day",
+    "what does my day",
+    "what's on today",
+    "whats on today",
+    "what's on my plate",
+    "whats on my plate",
+    "how's my day",
+    "hows my day",
+    "my day look",
+    "anything i should know",
+    "anything i need to know",
+    "anything urgent",
+    "what's going on",
+    "whats going on",
+    "summarize my",
+    "summarise my",
+    "my schedule",
+    "what's up with",
+)
+
 
 def pick_model(user_message: str, max_tier: str = OPUS) -> str:
-    """Haiku by default; explicit user request jumps straight to Opus.
-    `max_tier` lets the governor cap escalation when the budget is tight."""
+    """Haiku by default; briefing/gather asks start on Sonnet so she actually
+    pulls live data; an explicit "think hard" jumps straight to Opus.
+    `max_tier` lets the governor cap the tier when the budget is tight."""
     lowered = user_message.lower()
-    wanted = OPUS if any(m in lowered for m in _THINK_HARD_MARKERS) else HAIKU
+    if any(m in lowered for m in _THINK_HARD_MARKERS):
+        wanted = OPUS
+    elif any(m in lowered for m in _GATHER_MARKERS):
+        wanted = SONNET
+    else:
+        wanted = HAIKU
     return cap_tier(wanted, max_tier)
 
 

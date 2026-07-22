@@ -258,7 +258,8 @@ def _wire_proactivity(app: App) -> None:
     settings = app.settings
     app.sweeper = Sweeper(settings, app.bus, app.memory, app.brain, app.notify)
     app.digests = DigestService(
-        settings, app.memory, app.bus, app.brain, app.notify, gcal=app.gcal, conn=app.conn
+        settings, app.memory, app.bus, app.brain, app.notify,
+        gcal=app.gcal, gmail=app.gmail, conn=app.conn,
     )
     if settings.dry_run:
         return  # sweeps and digests call the LLM — no background spend in a dry run

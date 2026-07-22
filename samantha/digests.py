@@ -26,15 +26,20 @@ log = logging.getLogger(__name__)
 Notify = Callable[[str], Awaitable[None]]
 
 MORNING_INSTRUCTIONS = """\
-Compose the owner's morning brief from the data below. Structure: a one-line \
-greeting with the day's shape, then today's calendar (times + what to know), \
-then tasks needing attention, then anything from the overnight backlog worth \
-mentioning. Keep it tight — under 150 words. Skip empty sections silently."""
+Write the owner's morning brief in your own texting voice — the way you'd tap \
+it out, not a formatted report. Open with one line on the shape of the day, \
+then the calendar (times + anything they'd want flagged: a moved meeting, a \
+conflict, a tight turnaround), then what actually needs them today — tasks \
+due, unread email that genuinely matters (someone waiting on a reply, a \
+deadline), decisions sitting open. Call out the one or two things that will \
+bite if ignored. Skip empty sections without announcing them. Under 150 words, \
+and sound like someone who's already looked at everything."""
 
 EVENING_INSTRUCTIONS = """\
-Compose a short evening review from the data below: what's on tomorrow \
-morning, any open loose ends from today's backlog. Max 60 words. If there is \
-genuinely nothing useful to say, reply with exactly NOTHING."""
+Write a short evening review in your own voice from the data below: what's on \
+tomorrow morning, and any loose end from today still hanging (an unanswered \
+email that matters, a task that slipped). Max 60 words. If there's genuinely \
+nothing useful to say, reply with exactly NOTHING."""
 
 
 class DigestService:
@@ -46,6 +51,7 @@ class DigestService:
         brain: Brain | None,
         notify: Notify,
         gcal=None,
+        gmail=None,
         conn=None,
     ) -> None:
         self.settings = settings
@@ -54,6 +60,7 @@ class DigestService:
         self.brain = brain
         self.notify = notify
         self.gcal = gcal
+        self.gmail = gmail
         self.conn = conn if conn is not None else memory.conn
 
     async def morning(self) -> None:
@@ -122,6 +129,19 @@ class DigestService:
                 )
             except Exception:
                 log.exception("digest: calendar fetch failed")
+
+        # A morning brief that ignores the inbox isn't a brief. Pull recent
+        # unread from the primary category so the digest can flag anything the
+        # owner still owes a reply on — deterministic gather, LLM just phrases.
+        if self.gmail is not None:
+            try:
+                data["unread_email"] = await asyncio.to_thread(
+                    self.gmail.search,
+                    "in:inbox is:unread newer_than:2d category:primary",
+                    8,
+                )
+            except Exception:
+                log.exception("digest: gmail fetch failed")
 
         data["open_tasks"] = [
             dict(r)
