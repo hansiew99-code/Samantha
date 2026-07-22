@@ -1,6 +1,6 @@
 # Samantha v0.2.0 — Attention & Follow-Through
 
-**Status:** unreleased branch candidate
+**Status:** deployed to production
 
 **Prepared:** 22 July 2026
 
@@ -8,7 +8,7 @@
 
 This patch changes Samantha from a mostly reactive chatbot with scheduled summaries into a more dependable assistant loop: observe, decide what deserves attention, keep commitments open, verify the source, and close the loop without making the owner repeat themselves.
 
-It does not mean the running Telegram bot has been upgraded. The full offline suite is green (**226 passed**), but the branch still needs a staging deployment, live OAuth smoke tests, and an explicit production rollout.
+The running Telegram bot was upgraded on 22 July 2026. The exact Ubuntu release environment passed **231 tests**, live read-only checks succeeded against Gmail, Calendar, and Google Chat, the memory migration passed SQLite integrity checks, and the service reached a stable `active/running` state with zero restarts and no error-level startup logs.
 
 ## The visible difference
 
@@ -162,8 +162,8 @@ The local governor is not a provider-side prepaid limit. The cost of one request
 ### Google access and token handling
 
 - Replaced the broad `calendar` and `gmail.modify` scopes with `calendar.events`, `calendar.freebusy`, `gmail.readonly`, and `gmail.send`; Google Chat remains read-only.
-- New and refreshed `google_token.json` files are restricted to owner read/write (`0600`).
-- Existing installations must run `scripts/setup_auth.py` again and re-consent to mint a token with the new scope set.
+- Fresh consent uses the narrower grants, while tokens previously minted with `calendar` and `gmail.modify` remain compatible and refresh with their exact recorded grants. Tokens missing any required capability fail closed instead of producing a misleading partial connection.
+- New, loaded, and refreshed `google_token.json` files are restricted to owner read/write (`0600`), and credential failures log only a safe error class rather than token or provider-response contents.
 - The daemon sets an owner-only process umask; the SQLite database and `.env` are restricted to `0600`, and the systemd unit adds `UMask=0077`, `NoNewPrivileges`, and a private temporary directory.
 
 ### Approval integrity
@@ -182,28 +182,24 @@ The local governor is not a provider-side prepaid limit. The cost of one request
 
 ## Verification
 
-- **226 offline tests passed.** No network connection or live credentials were used.
-- Live Telegram, Google OAuth, Gmail watcher timing, and VPS restart behavior still require staging smoke tests because offline fixtures cannot verify provider configuration or delivery.
+- **231 tests passed locally and 231 tests passed in the exact Ubuntu x86_64 release environment.** The host run included all memory, watcher, reminder, approval, polling, security, and OAuth regression tests.
+- Live read-only smoke checks passed for Gmail, Calendar, and Google Chat with the production OAuth token. The compatibility fix avoided re-consent and preserved the original grants.
+- Production configuration validation passed for Anthropic, Telegram, Google, and Google Chat. Slack and ClickUp remain intentionally disabled because no credentials are configured.
+- The production SQLite migration completed with `PRAGMA integrity_check=ok`; the new reminder-delivery and watcher schema is present.
+- The systemd service is `active/running`, uses the new isolated virtual environment and hardened unit, has zero restarts, and produced no error-level log entries during the post-deploy observation window.
+- A normal owner message in Telegram remains the final end-to-end conversational acceptance test; no synthetic message was sent from the deployment shell.
 
 ## Database migration
 
 Startup applies the idempotent schema and compatibility migration, including the `watchers` table, active-watch index, reminder delivery versions, provider-event deduplication index, and consolidation quarantine. Existing facts, messages, reminders, rules, and pending actions are preserved.
 
-Before production rollout:
-
-1. Stop the service and make a copy of `samantha.db`.
-2. Deploy the branch and run the offline tests.
-3. Start in `SAMANTHA_DRY_RUN=1` for a configuration check.
-4. Run the watcher, approval, quiet-hours, freshness, restart, and budget smoke tests in the README.
-5. Turn dry-run off only after Telegram and Google OAuth behavior is verified.
+The production rollout completed with a protected pre-upgrade database snapshot, environment/token backups, a disposable migration rehearsal, a fresh release virtual environment, host-side tests, live provider reads, and a short post-start stability observation. The previous code, virtual environment, service definition, and database snapshot remain on the host for rollback.
 
 Rollback is code-level: stop the service, restore the previous build, and restore the database backup if the older build cannot tolerate the added schema. Do not delete the new watcher rows as a first response; they contain active commitments.
 
 ## Access required
 
-No production credentials are needed to review or test this patch offline.
-
-To make it live, the operator needs scoped deploy access to the always-on host, the ability to restart/read logs for the service, and user-run OAuth/token setup described in the README. Do not send passwords, API keys, OAuth refresh tokens, `.env`, or `samantha.db` over chat or commit them to GitHub.
+No additional access is required for the currently enabled production sources: Telegram, Gmail, Calendar, and Google Chat are configured on the host. Slack and ClickUp remain disabled; enabling either later requires entering its credentials directly on the VM and running the source-specific smoke tests. Do not send passwords, API keys, OAuth refresh tokens, `.env`, or `samantha.db` over chat or commit them to GitHub.
 
 ## Not solved yet
 
