@@ -1,6 +1,6 @@
 # Samantha v0.2.2 — Less Briefing, More Samantha
 
-**Status:** validated release candidate
+**Status:** deployed to production
 
 **Prepared:** 22 July 2026
 
@@ -153,19 +153,33 @@ The intended result for the supplied exchange is:
 - The Calendar corrective pass happens only when the model tries to ask before
   doing the required private read; explicit-time reminders use the normal loop.
 
-## Verification before production
+## Verification and production
 
-- **333 offline tests pass**, including the exact 9:30 AM / Phillip-at-2 PM
+- **333 tests pass locally and on the production Ubuntu x86_64 host**, including
+  the exact 9:30 AM / Phillip-at-2 PM
   sentence, structured Calendar proof, owner-local naive and UTC receipts,
   clock-trigger timezone inspection, tomorrow-vs-tonight conversion, date-only
   deadlines, 18-hour unresolved-item aging, urgency resurfacing, grounded
   receipts, aggregate context limits, hard brief caps, and vague/wrong-time
   confirmation replacement.
 - Formatting checks are clean.
-- A reusable live-model smoke now exercises both supplied Telegram failures in
-  a temporary database without starting Telegram or reading Google. Production
-  backup, Ubuntu x86_64 verification, this voice smoke, service restart, and
-  post-start observation are still required before this section claims deployment.
+- The production-configured **22-tool bundle** was accepted by a real Anthropic
+  request. The live voice smoke used a temporary database and synthetic Calendar:
+  its no-action digest fixture stayed quiet, and the screenshot regression
+  produced the specific 1:50 PM Phil reminder with the referencer and upload
+  folder details intact.
+- Production advanced from `a32d752` to `c9e2781`. Startup reported
+  `samantha 0.2.2 up`; systemd remained `active/running` with zero restarts and
+  no error-level log entries, and all four scheduled reminders rehydrated.
+- The pre-deploy database backup is
+  `/home/hansiew99/samantha/backups/samantha-pre-v0.2.2-c9e2781.db` with
+  owner-only `0600` permissions. Both the backup and live database passed
+  `PRAGMA integrity_check` and foreign-key checks.
+- The reminder-ledger fingerprint was identical before installation, before
+  restart, and after restart. The screenshot's Phil reminder remained scheduled
+  for 1:50 PM Kuala Lumpur time on 23 July 2026.
+- No new VM, database, queue, or other Google Cloud resource was created; this
+  release continues to use the existing free-tier-oriented deployment.
 
 ---
 

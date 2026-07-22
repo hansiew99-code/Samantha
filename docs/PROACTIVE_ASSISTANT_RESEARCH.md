@@ -4,7 +4,7 @@
 
 **Scope:** proactivity, human tone, durable memory, context/token efficiency, autonomy, source coverage, and trust
 
-**Implementation reference:** the v0.2.2 release candidate described in [PATCH_NOTES.md](../PATCH_NOTES.md)
+**Implementation reference:** the production v0.2.2 release described in [PATCH_NOTES.md](../PATCH_NOTES.md)
 
 ## Executive conclusion
 
@@ -23,7 +23,7 @@ The model is one component. The “assistant” is the whole harness around it.
 
 ## Status legend
 
-- **Implemented** — present in the v0.2.2 release candidate and covered by its verification suite.
+- **Implemented** — running in production v0.2.2 and covered by its verification suite.
 - **Partial** — a useful slice exists, but it does not meet the full target.
 - **Next** — research-backed follow-up, not present in this branch.
 
@@ -357,13 +357,14 @@ Use shadow mode before enabling more pushes: generate decisions and reasons, but
 
 ### P0 — trust before more access
 
-The v0.2.2 release candidate currently passes **333 offline tests**. The release-blocking work is now:
+Production now runs v0.2.2 at `c9e2781`; **333 tests** pass on the Ubuntu x86_64
+host, the real Anthropic tool contract and voice regression passed, and the live
+reminder ledger survived the rollout unchanged. The remaining trust work is:
 
-1. Stage this branch with test Telegram/Google accounts; do not replace production directly.
-2. Run live OAuth, watcher timing, Telegram delivery, restart, and permission smoke tests.
-3. Add a transactional Telegram delivery outbox and receipts.
-4. Add exact token preflight near context/budget limits and explicit stop-reason handling.
-5. Add injection regression fixtures and the action-policy/payload-binding defense-in-depth layer.
+1. Add a transactional Telegram delivery outbox and receipts.
+2. Add exact token preflight near context/budget limits and explicit stop-reason handling.
+3. Add injection regression fixtures and the action-policy/payload-binding defense-in-depth layer.
+4. Run new provider access in shadow mode before allowing its alerts or writes into production.
 
 ### P1 — event-driven awareness
 
@@ -397,13 +398,15 @@ The v0.2.2 release candidate currently passes **333 offline tests**. The release
 - No live mailbox, Chat, Telegram, Slack, ClickUp, or API secrets.
 - Synthetic fixtures for all integration behavior.
 
-### To stage the real assistant
+### To deploy or extend the real assistant
 
 - A scoped deployment account on the always-on host with permission to deploy this service, restart it, and read only its logs/data directory.
 - `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, and `TELEGRAM_CHAT_ID`, entered directly on the host by the owner.
 - A Google OAuth desktop client plus owner-completed consent for `calendar.events`, `calendar.freebusy`, `gmail.readonly`, `gmail.send`, `chat.spaces.readonly`, and `chat.messages.readonly`. Google Chat ingestion stays disabled unless `GCHAT_ENABLED=1`, but the current consent flow includes its read-only scopes. Existing installations must re-consent after the scope reduction. The owner should run the browser flow; no Google password is shared, and the generated token file is set to `0600`.
 - Optional Slack app tokens and ClickUp token only for sources explicitly enabled.
-- Prefer a test Google account/workspace and test Telegram bot for the first live pass.
+- Prefer a test Google account/workspace and test Telegram bot for the first live
+  pass of any newly enabled source. The currently configured Telegram, Gmail,
+  Calendar, and Google Chat deployment is already live.
 
 ### Do not provide
 
@@ -412,7 +415,9 @@ The v0.2.2 release candidate currently passes **333 offline tests**. The release
 - `.env`, `google_token.json`, `samantha.db`, or OAuth refresh-token contents.
 - Production write scopes merely to run offline tests.
 
-The safe rollout sequence is: offline tests → dry-run boot → test accounts → shadow proactivity → limited live source → full production after owner review.
+For each newly enabled source, the safe rollout sequence remains: offline tests
+→ dry-run boot → test accounts → shadow proactivity → limited live source →
+full production after owner review.
 
 ## Primary references
 
