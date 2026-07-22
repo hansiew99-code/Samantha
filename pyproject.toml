@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "samantha"
-version = "0.2.1"
+version = "0.2.2"
 description = "A proactive, persistent-memory personal AI assistant. See BRIEF.md."
 requires-python = ">=3.11"
 dependencies = [

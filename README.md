@@ -2,7 +2,7 @@
 
 A proactive, persistent-memory personal AI assistant — Samantha from *Her* by way of Andy from *The Devil Wears Prada*. Telegram is her conversation, notification, and approval surface; the other integrations are sources she watches and tools she can use.
 
-This branch contains an assistant overhaul, but it is not proof that a live instance has been upgraded. Read **[PATCH_NOTES.md](PATCH_NOTES.md)** for the exact change set and deployment status, and **[docs/PROACTIVE_ASSISTANT_RESEARCH.md](docs/PROACTIVE_ASSISTANT_RESEARCH.md)** for the research and remaining roadmap.
+This branch contains the v0.2.2 assistant overhaul. Read **[PATCH_NOTES.md](PATCH_NOTES.md)** for the exact change set and current deployment status, and **[docs/PROACTIVE_ASSISTANT_RESEARCH.md](docs/PROACTIVE_ASSISTANT_RESEARCH.md)** for the research and remaining roadmap.
 
 Original design and architecture: **[BRIEF.md](BRIEF.md)**. Treat the patch notes as the current implementation/limitations record. In short:
 
@@ -119,7 +119,7 @@ Run these once she's live (they mirror the milestones in BRIEF §11):
 
 ```bash
 .venv/bin/pip install -e ".[dev]"
-.venv/bin/python -m pytest            # 226 passing offline tests; no network or live keys
+.venv/bin/python -m pytest            # 333 passing offline tests; no network or live keys
 .venv/bin/python -m samantha --check-config
 .venv/bin/python -m samantha --dry-run  # boots with zero credentials
 ```

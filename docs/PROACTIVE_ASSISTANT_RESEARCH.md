@@ -4,7 +4,7 @@
 
 **Scope:** proactivity, human tone, durable memory, context/token efficiency, autonomy, source coverage, and trust
 
-**Implementation reference:** the deployed v0.2.1 release described in [PATCH_NOTES.md](../PATCH_NOTES.md)
+**Implementation reference:** the v0.2.2 release candidate described in [PATCH_NOTES.md](../PATCH_NOTES.md)
 
 ## Executive conclusion
 
@@ -23,7 +23,7 @@ The model is one component. The “assistant” is the whole harness around it.
 
 ## Status legend
 
-- **Implemented** — present in the deployed v0.2.1 release and covered by its verification suite.
+- **Implemented** — present in the v0.2.2 release candidate and covered by its verification suite.
 - **Partial** — a useful slice exists, but it does not meet the full target.
 - **Next** — research-backed follow-up, not present in this branch.
 
@@ -236,7 +236,7 @@ Examples:
 
 ### Current branch
 
-**Implemented in the prompt and deterministic owner-copy paths; still needs real transcript review.** The stable prompt is now a behavior contract rather than film-character cosplay, is about one third shorter, and requires answer-first/source-second phrasing, judgment, and one useful next move. Sweep and digest prompts preserve source labels and ban stock count/urgency headings. Degraded replies are typed separately from successful dialogue, and source questions with a unique recent event match bypass the model entirely. Voice-contract regressions cover the supplied Reanne/Google Chat scenario, but a charming sentence still does not compensate for a false claim or dropped commitment.
+**Implemented with prompt rules plus deterministic runtime backstops; still needs ongoing transcript review.** The stable prompt is a behavior contract rather than film-character cosplay and requires text-message cadence, answer-first phrasing, concrete consequences, continuity, and one useful next move. Sweep and digest prompts preserve source labels, allow at most one low-stakes dry aside, and ban stock count/urgency headings. Briefs now have prompt-level item limits plus slot-specific sentence/word ceilings enforced again at delivery without another model call. Multi-event sweeps send at most two short paragraphs and defer the rest. Meeting-relative reminders require one matching live Calendar event; vague or wrong-time finals fall back to an authoritative owner-local what-and-when receipt. Degraded replies remain separate from successful dialogue, and source questions with a unique recent event match bypass the model entirely. A charming sentence still does not compensate for a false claim or dropped commitment.
 
 ## 6. Memory and context: durable store, small working set
 
@@ -258,7 +258,7 @@ The correct pattern is therefore:
 
 ### Current branch
 
-**Partial.** SQLite holds raw messages, facts, people, source events, core memory, and a running summary. FTS retrieves up to eight facts. Recent dialogue, proactive referents, facts, summaries, core memory, and tool results have independent bounds. Failed replies no longer enter normal dialogue context, and recent source provenance can be resolved locally with no model tokens. Nightly consolidation uses oldest-first checkpointed chunks and refuses to advance on partial/invalid output. Multi-value facts no longer erase one another by default.
+**Partial.** SQLite holds raw messages, facts, people, source events, a bounded digest-receipt ledger, core memory, and a running summary. FTS retrieves up to eight facts. Recent dialogue, proactive referents, facts, summaries, core memory, tool results, and digest anti-repeat context have independent bounds. Only the two latest clipped pushes enter brief composition; a stored seven-day seen ledger supplies an 18-hour suppression cooldown but never enters model context. The complete digest snapshot also has an 18,000-character ceiling. Failed replies no longer enter normal dialogue context, and recent source provenance can be resolved locally with no model tokens. Nightly consolidation uses oldest-first checkpointed chunks and refuses to advance on partial/invalid output. Multi-value facts no longer erase one another by default.
 
 Remaining problems:
 
@@ -357,7 +357,7 @@ Use shadow mode before enabling more pushes: generate decisions and reasons, but
 
 ### P0 — trust before more access
 
-The branch currently passes **226 offline tests**. The release-blocking work is now:
+The v0.2.2 release candidate currently passes **333 offline tests**. The release-blocking work is now:
 
 1. Stage this branch with test Telegram/Google accounts; do not replace production directly.
 2. Run live OAuth, watcher timing, Telegram delivery, restart, and permission smoke tests.

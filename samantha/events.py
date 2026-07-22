@@ -13,7 +13,7 @@ import logging
 import re
 import sqlite3
 import asyncio
-from datetime import datetime, time
+from datetime import datetime, time, timedelta, timezone
 from typing import Awaitable, Callable
 from zoneinfo import ZoneInfo
 
@@ -29,6 +29,11 @@ from .rules import RulesEngine
 log = logging.getLogger(__name__)
 
 MAX_EVENTS_PER_SWEEP = 20
+MAX_NOTIFICATIONS_PER_SWEEP = 2
+MAX_NOTIFICATION_SENTENCES = 2
+MAX_NOTIFICATION_WORDS = 30
+MAX_SWEEP_SENTENCES = 2
+MAX_SWEEP_WORDS = 52
 
 SOURCE_LABELS = {
     "gmail": "Gmail",
@@ -38,6 +43,29 @@ SOURCE_LABELS = {
     "calendar": "Calendar",
     "gcal": "Google Calendar",
 }
+
+_ROBOTIC_ALERT_LEAD_RE = re.compile(
+    r"^(?:(?:one|two|three|four|five|\d+)\s+(?:things?|items?)\s+(?:"
+    r"need(?:(?: your)? attention)?(?: today| tonight)?|(?:are )?waiting on you|"
+    r"worth your attention|require your attention)"
+    r"|(?:here(?:['\u2019]s| is) (?:your |the )?(?:brief|update)|quick update|"
+    r"worth your attention|(?:just a )?heads[ -]up))(?:[.!?]\s+|:\s+)(?=\S)",
+    re.IGNORECASE,
+)
+
+_REPORT_STYLE_ALERT_LEAD_RE = re.compile(
+    r"^(?:(?:one|two|three|four|five|\d+)\s+(?:things?|items?)\b"
+    r"|here(?:['\u2019]s| is) (?:your |the )?(?:brief|update)\b"
+    r"|quick update\b|worth your attention\b|status update\b"
+    r"|(?:just a )?heads[ -]up\b"
+    r"|(?:first|second|third)\s*[:,])",
+    re.IGNORECASE,
+)
+
+_LIST_LAYOUT_RE = re.compile(
+    r"(?m)^\s*(?:[-*\u2022\u25aa\u25e6\u2023]|\d{1,2}[.)])\s+\S"
+)
+_HEADING_LAYOUT_RE = re.compile(r"(?m)^\s*#{1,6}\s+\S")
 
 Notify = Callable[[str], Awaitable[None]]
 
@@ -66,7 +94,15 @@ didn't need to happen costs you their trust.
 
 Write in sentence case with natural contractions. Do not use canned openings \
 such as “worth your attention”, “two things waiting on you”, “heads up”, or \
-“quick update”. Do not mention systems, models, logs, or internal processing.
+“quick update”. Keep a notification to one or two short sentences; don't repeat \
+the same fact in a setup line and a next-step line. Dry humour is optional, only \
+for low-stakes items, and at most one aside across the whole sweep. Never joke \
+about deadlines, money, people waiting, or integration failures. Do not mention \
+systems, models, logs, or internal processing.
+
+The supplied local `now` and each event's `due_when` are authoritative. Copy \
+`due_when` when using relative time. Never turn “tomorrow” into “tonight”, and \
+never invent a deadline from a received timestamp.
 
 If the next step is an email/Slack draft, you may offer it because sending is \
 still approval-gated. You may also make one exact reminder offer. Do not ask a \
@@ -91,6 +127,83 @@ def in_work_hours(now: datetime, weekdays: set[int], start_hour: int, end_hour: 
     """True inside the working window — the only time proactive sweeps/scans run.
     weekdays are datetime.weekday() ints (Mon=0); end_hour is exclusive."""
     return now.weekday() in weekdays and start_hour <= now.hour < end_hour
+
+
+def due_context(value: object, now: datetime) -> dict[str, str] | None:
+    """Return an authoritative local label for an ISO deadline.
+
+    Provider and reminder timestamps are stored with offsets (normally UTC).
+    Relative-day words are computed here so a model cannot relabel tomorrow as
+    tonight after a later digest run.
+    """
+    if value in (None, ""):
+        return None
+    raw = str(value).strip()
+    local_now = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        # Date-only provider deadlines are all-day values in the owner's
+        # calendar, not midnight UTC. Adding a fabricated 08:00 made an all-day
+        # task look overdue by breakfast in Kuala Lumpur.
+        try:
+            local_due = datetime.combine(
+                datetime.fromisoformat(raw).date(),
+                time.min,
+                tzinfo=local_now.tzinfo,
+            )
+        except ValueError:
+            return None
+        day_delta = (local_due.date() - local_now.date()).days
+        if day_delta < 0:
+            when = f"overdue since {local_due:%a %d %b}"
+            bucket = "overdue"
+        elif day_delta == 0:
+            when = "today"
+            bucket = "today"
+        elif day_delta == 1:
+            when = "tomorrow"
+            bucket = "tomorrow"
+        else:
+            when = f"{local_due:%a %d %b}"
+            bucket = local_due.date().isoformat()
+        return {
+            "when": when,
+            "bucket": bucket,
+            "local": local_due.isoformat(),
+        }
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    local_due = parsed.astimezone(local_now.tzinfo)
+    day_delta = (local_due.date() - local_now.date()).days
+    clock = local_due.strftime("%H:%M")
+    if local_due < local_now:
+        when = (
+            f"overdue since today at {clock}"
+            if day_delta == 0
+            else f"overdue since {local_due:%a %d %b at %H:%M}"
+        )
+        bucket = "overdue"
+    elif day_delta == 0:
+        when = f"today at {clock}"
+        bucket = (
+            "imminent"
+            if local_due - local_now <= timedelta(hours=2)
+            else "today"
+        )
+    elif day_delta == 1:
+        when = f"tomorrow at {clock}"
+        bucket = "tomorrow"
+    else:
+        when = f"{local_due:%a %d %b at %H:%M}"
+        bucket = local_due.date().isoformat()
+    return {
+        "when": when,
+        "bucket": bucket,
+        "local": local_due.isoformat(),
+    }
 
 
 class EventBus:
@@ -147,14 +260,15 @@ class EventBus:
         self.conn.commit()
 
     def digest_backlog(self, hours: int = 26) -> list[sqlite3.Row]:
-        """Events held for the next digest (plus anything still unprocessed)."""
+        """Events waiting for a digest, until an explicit terminal disposition.
+
+        ``hours`` remains for API compatibility with older callers. Age alone
+        must never make an undelivered commitment disappear.
+        """
         return self.conn.execute(
             "SELECT * FROM events_queue WHERE "
-            "(disposition = 'digest' AND processed_at >= datetime('now', ?)) "
-            "OR processed_at IS NULL ORDER BY id",
-            (f"-{hours} hours",),
+            "disposition = 'digest' OR processed_at IS NULL ORDER BY id",
         ).fetchall()
-
 
 class Sweeper:
     """One Haiku call per sweep, covering every pending event."""
@@ -205,10 +319,10 @@ class Sweeper:
         # Deterministic re-filter (a rule may have been added after enqueue).
         survivors: list[sqlite3.Row] = []
         for ev in events:
-            if self.bus.rules.allows(ev["source"], ev["scope"]):
-                survivors.append(ev)
-            else:
+            if not self.bus.rules.allows(ev["source"], ev["scope"]):
                 self.bus.mark(ev["id"], "suppressed")
+                continue
+            survivors.append(ev)
         if not survivors:
             return len(events)
         if self.brain is None:
@@ -220,20 +334,57 @@ class Sweeper:
             decision = decisions.get(ev["id"], {"action": "digest"})
             action = decision.get("action", "digest")
             if action == "notify":
-                vip = self.bus.rules.is_vip(ev["source"], ev["scope"])
-                notifications.append(
-                    (ev, decision.get("message") or self._fallback_line(ev), vip)
+                message = self._guard_notification(
+                    ev, decision.get("message")
                 )
+                if message is None:
+                    # A malformed model alert is not safe to partially deliver:
+                    # keep the source event for the next deterministic digest.
+                    self.bus.mark(ev["id"], "digest")
+                    continue
+                vip = self.bus.rules.is_vip(ev["source"], ev["scope"])
+                notifications.append((ev, message, vip))
             elif action == "ignore":
                 self.bus.mark(ev["id"], "ignored")
             else:
                 self.bus.mark(ev["id"], "digest")
 
         if notifications:
+            notifications.sort(key=lambda item: item[2], reverse=True)
+            selected: list[tuple[sqlite3.Row, str, bool]] = []
+            sentence_total = 0
+            word_total = 0
+            for item in notifications:
+                ev, message, vip = item
+                rendered = self._render_notification(ev, message, vip)
+                sentence_count = self._sentence_count(rendered)
+                word_count = self._word_count(rendered)
+                if (
+                    len(selected) >= MAX_NOTIFICATIONS_PER_SWEEP
+                    or sentence_total + sentence_count > MAX_SWEEP_SENTENCES
+                    or word_total + word_count > MAX_SWEEP_WORDS
+                ):
+                    self.bus.mark(ev["id"], "digest")
+                    continue
+                selected.append(item)
+                sentence_total += sentence_count
+                word_total += word_count
+            notifications = selected
+        if notifications:
             # One sweep should feel like one considered interruption, not a
             # burst of unrelated bot notifications.  Only mark after Telegram
             # accepts the bundled delivery so a transport failure can retry.
-            await self.notify(self._bundle_notifications(notifications))
+            bundled = self._bundle_notifications(notifications)
+            # This should be guaranteed by the per-alert and selection guards,
+            # but fail closed if later formatting changes violate the contract.
+            if (
+                self._sentence_count(bundled) > MAX_SWEEP_SENTENCES
+                or self._word_count(bundled) > MAX_SWEEP_WORDS
+            ):
+                for ev, _message, _vip in notifications:
+                    self.bus.mark(ev["id"], "digest")
+                return len(events)
+            await self.notify(bundled)
             for ev, _message, _vip in notifications:
                 self.bus.mark(ev["id"], "notified")
         return len(events)
@@ -256,10 +407,12 @@ class Sweeper:
             datetime.now(ZoneInfo(self.settings.timezone)).isoformat(),
         )
         listing = []
+        now = datetime.now(ZoneInfo(self.settings.timezone))
         index_to_id: dict[int, int] = {}
         for i, ev in enumerate(events):
             index_to_id[i] = ev["id"]
             payload = json.loads(ev["payload"])
+            timing = due_context(payload.get("due_at"), now)
             snippet = str(
                 payload.get("snippet")
                 or payload.get("text")
@@ -275,6 +428,8 @@ class Sweeper:
                     "subject": str(payload.get("subject") or "")[:200],
                     "snippet": snippet,
                     "source_time": self._source_time(payload),
+                    "due_when": timing["when"] if timing else None,
+                    "due_local": timing["local"] if timing else None,
                     "received_at": ev["created_at"],
                     "vip": self.bus.rules.is_vip(ev["source"], ev["scope"]),
                 }
@@ -283,9 +438,7 @@ class Sweeper:
         system.append({"type": "text", "text": SWEEP_INSTRUCTIONS})
         user = json.dumps(
             {
-                "now": datetime.now(
-                    ZoneInfo(self.settings.timezone)
-                ).isoformat(),
+                "now": now.isoformat(),
                 "timezone": self.settings.timezone,
                 "events": listing,
             },
@@ -312,15 +465,77 @@ class Sweeper:
         return f"{Sweeper._source_label(ev['source'])} — {subject}"[:200]
 
     @staticmethod
+    def _guard_notification(ev: sqlite3.Row, message: object) -> str | None:
+        """Return terse prose safe to push, or ``None`` to defer the event.
+
+        Sweep prose comes from a model and is user-visible without another
+        confirmation.  Rejecting a bad shape is safer than clipping a deadline,
+        name, or next step halfway through and then marking the event delivered.
+        """
+        if not isinstance(message, str):
+            return None
+        text = message.strip()
+        if not text or len(text) > 1_000:
+            return None
+        if any(ord(char) < 32 and char not in "\n\r\t" for char in text):
+            return None
+        if text.startswith(("{", "[")):
+            return None
+        if _LIST_LAYOUT_RE.search(text) or _HEADING_LAYOUT_RE.search(text):
+            return None
+
+        # Remove an already-present source prefix while shaping the prose; the
+        # renderer adds the authoritative label back exactly once.
+        label = Sweeper._source_label(ev["source"])
+        text = re.sub(
+            rf"^{re.escape(label)}\s*(?:[\u2014\u2013:\-]\s*)",
+            "",
+            text,
+            count=1,
+            flags=re.IGNORECASE,
+        ).strip()
+        without_lead = _ROBOTIC_ALERT_LEAD_RE.sub("", text, count=1).strip()
+        # The pattern can only remove a complete canned sentence/colon lead,
+        # and must never turn the whole response into an empty notification.
+        if without_lead:
+            text = without_lead
+        if not text or _REPORT_STYLE_ALERT_LEAD_RE.match(text):
+            return None
+
+        # Newlines in ordinary prose are harmless transport wrapping. Lists
+        # were rejected above, so collapse the remainder to a single text line.
+        text = " ".join(text.split())
+        if not re.search(r"[^\W_]", text, re.UNICODE):
+            return None
+        if Sweeper._sentence_count(text) > MAX_NOTIFICATION_SENTENCES:
+            return None
+
+        rendered = Sweeper._with_source(ev, text)
+        if Sweeper._word_count(rendered) > MAX_NOTIFICATION_WORDS:
+            return None
+        return text
+
+    @staticmethod
     def _source_label(source: str) -> str:
         return SOURCE_LABELS.get(source.lower(), source.replace("_", " ").title())
 
     @staticmethod
     def _with_source(ev: sqlite3.Row, message: str) -> str:
         label = Sweeper._source_label(ev["source"])
-        if label.casefold() in message.casefold():
+        if re.match(rf"^{re.escape(label)}\b", message, re.IGNORECASE):
             return message
         return f"{label} — {message}"
+
+    @staticmethod
+    def _sentence_count(text: str) -> int:
+        compact = " ".join(text.split())
+        if not compact:
+            return 0
+        return len(re.split(r"(?<=[.!?])\s+", compact))
+
+    @staticmethod
+    def _word_count(text: str) -> int:
+        return len(re.findall(r"[^\W_]+(?:['\u2019][^\W_]+)?", text, re.UNICODE))
 
     @staticmethod
     def _source_time(payload: dict) -> str | None:
@@ -349,9 +564,13 @@ class Sweeper:
     ) -> str:
         if len(items) == 1:
             ev, message, vip = items[0]
-            return ("❗ " if vip else "") + Sweeper._with_source(ev, message)
-        lines = [
-            f"• {'❗ ' if vip else ''}{Sweeper._with_source(ev, message)}"
+            return Sweeper._render_notification(ev, message, vip)
+        paragraphs = [
+            Sweeper._render_notification(ev, message, vip)
             for ev, message, vip in items
         ]
-        return "\n".join(lines)
+        return "\n\n".join(paragraphs)
+
+    @staticmethod
+    def _render_notification(ev: sqlite3.Row, message: str, vip: bool) -> str:
+        return ("❗ " if vip else "") + Sweeper._with_source(ev, message)

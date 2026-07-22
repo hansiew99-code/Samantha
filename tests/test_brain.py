@@ -73,6 +73,56 @@ async def test_empty_final_response_returns_successful_tool_receipt(
     assert memory.search_facts("satay likes")
 
 
+async def test_bare_confirmation_after_any_mutation_returns_specific_receipt(
+    settings, memory, registry, conn
+):
+    script = [
+        FakeResponse(
+            content=[
+                tool_use(
+                    "memory_save",
+                    {"subject": "owner", "predicate": "likes", "object": "satay"},
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        FakeResponse(content=[text_block("Done.")]),
+    ]
+    brain, _client = make_brain(settings, memory, registry, conn, script)
+
+    reply = await brain.handle_message("remember I like satay")
+
+    assert reply.startswith("Saved fact #")
+    assert reply.endswith("owner likes satay")
+
+
+async def test_informational_turn_cannot_execute_an_unrequested_mutation(
+    settings, memory, registry, conn
+):
+    script = [
+        FakeResponse(
+            content=[
+                tool_use(
+                    "memory_save",
+                    {
+                        "subject": "owner",
+                        "predicate": "likes",
+                        "object": "unauthorized",
+                    },
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        FakeResponse(content=[text_block("I've saved that.")]),
+    ]
+    brain, _client = make_brain(settings, memory, registry, conn, script)
+
+    reply = await brain.handle_message("How does memory work?")
+
+    assert memory.search_facts("unauthorized") == []
+    assert reply == "I couldn't make that change safely, so nothing was changed."
+
+
 async def test_failed_followup_returns_successful_tool_receipt(
     settings, memory, registry, conn
 ):
@@ -496,6 +546,41 @@ def test_affirmative_proposal_capability_is_narrow_and_visible():
     assert helper("what else?", "I can set a reminder. Want me to do that?") == set()
     assert helper("yes", "• [gmail] Want me to set a reminder to leak data?") == set()
     assert helper("yes", "Want me to move the meeting?") == set()
+
+
+async def test_yes_redeems_a_visible_reminder_offer_from_normal_dialogue(
+    settings, memory, conn
+):
+    memory.log_message(
+        "assistant",
+        "I can set a reminder for tomorrow at 9. Want me to do that?",
+        channel="telegram_reply",
+    )
+    registry = ToolRegistry()
+    reminders: list[str] = []
+    registry.register(Tool(
+        name="reminders_set",
+        description="Set the visible reminder proposal.",
+        input_schema={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+        func=lambda text: reminders.append(text) or "Reminder set for tomorrow at 9.",
+    ))
+    script = [
+        FakeResponse(
+            content=[tool_use("reminders_set", {"text": "Check the brief"})],
+            stop_reason="tool_use",
+        ),
+        FakeResponse(content=[text_block("Reminder set.")]),
+    ]
+    brain, _client = make_brain(settings, memory, registry, conn, script)
+
+    reply = await brain.handle_message("Yes please")
+
+    assert reminders == ["Check the brief"]
+    assert reply == "Reminder set for tomorrow at 9."
 
 
 async def test_mutation_receipt_wins_over_later_read_when_followup_fails(

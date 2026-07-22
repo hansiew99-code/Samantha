@@ -1,3 +1,174 @@
+# Samantha v0.2.2 — Less Briefing, More Samantha
+
+**Status:** validated release candidate
+
+**Prepared:** 22 July 2026
+
+**Delivery surface:** Telegram
+
+This release addresses the 10:24 PM Telegram transcript directly. The problem
+was not one adjective in the personality prompt. Four separate runtime failures
+combined to make Samantha sound like a forgetful status-report bot: jobs ran on
+the VM clock, deadlines reached the model without an authoritative local label,
+briefs did not know what Samantha had just pushed, and successful reminder
+details could be discarded in favour of “Done.”
+
+## What actually broke
+
+- **Her clock was eight hours wrong.** The scheduler was configured for Kuala
+  Lumpur, but each `CronTrigger` silently used the Ubuntu VM's UTC timezone.
+  The configured 2 PM brief therefore fired at 10 PM; 9 AM fired at 5 PM; the
+  9 PM brief targeted 5 AM and was then swallowed by quiet hours.
+- **Tomorrow became tonight.** Reminder and task timestamps were handed to the
+  model as raw UTC values. A 9 AM Kuala Lumpur reminder stored as `01:00Z` could
+  be described incorrectly later that evening. Date-only tasks also acquired a
+  fictional 8 AM deadline.
+- **Each brief behaved as if it had amnesia.** Live unread items and queued
+  events could represent the same thing, and the next brief did not receive a
+  bounded record of the pushes the owner had already seen.
+- **The reminder worked, but the conversation failed.** The production database
+  shows that the Phil reminder was correctly stored for 1:50 PM. The model still
+  asked for a time already present in its own message, then reduced the successful
+  result to “Done.”
+- **Prompt-only tone rules were not enough.** The previous prompt already banned
+  generic headings, yet the model still produced “Three things need your
+  attention tonight.” There was no runtime limit to stop it.
+
+## Changed
+
+### Voice that reads like a text, not a generated brief
+
+- Rewrote the stable voice contract around casual sentence case, continuity,
+  concrete language, and answer-first replies. Corporate words such as
+  “flagged”, “blocker”, and “move forward” are explicitly replaced with the
+  actual consequence.
+- Dry humour is allowed only when the stakes are low, it arrives naturally, and
+  it fits in one short aside. It is never required and never used for deadlines,
+  money, failures, or people waiting.
+- Scheduled briefs now have prompt item ceilings plus runtime sentence/word
+  ceilings: **75 words / 3 items in the morning, 55 / 2 in the afternoon, and
+  35 / 2 in the evening**.
+- A deterministic delivery guard strips report-style throat-clearing, collapses
+  bullet/numbered memo formatting, and clips an ignored word limit without
+  spending a second model call. If clipping removes content, Samantha does not
+  falsely mark the omitted source items as delivered.
+- The older calendar-scanner and event-sweep lanes now follow the same contract:
+  no “heads up”, numbered status lists, or long model copy. Calendar pushes and
+  bundled source alerts carry at most two short priorities; malformed output is
+  deferred instead of pushed or falsely acknowledged.
+- The zero-token budget fallback now sends at most two short conversational
+  sentences rather than dumping up to sixteen labelled calendar/task rows.
+
+### Correct local time everywhere
+
+- Every proactive, digest, and consolidation cron trigger now carries the
+  owner's configured timezone explicitly. A regression inspects the actual
+  runtime triggers, not just configuration values.
+- Digests and sweeps receive deterministic owner-local fields: `local_due`,
+  `when`, and `time_bucket`. Relative words such as “today” and “tomorrow” are
+  computed before the model sees the item.
+- Date-only deadlines remain all-day local dates; no UTC conversion invents an
+  8 AM deadline.
+- Timed Calendar events disappear from later briefs once they start; a 9:30 AM
+  meeting can no longer return in the afternoon as an “overdue” task.
+
+### Memory without context sludge
+
+- Every digest candidate gets a stable item key. A bounded seven-day ledger
+  remembers only items lexically grounded in the text that actually reached
+  Telegram. It suppresses them for 18 hours, then lets still-unresolved mail or
+  Chat age back into consideration instead of confusing “mentioned” with
+  “handled.”
+- Live Gmail/Google Chat reads merge into copies already waiting in the event
+  queue, retaining the durable event receipt *and* the richer sender, subject,
+  and snippet. A new provider message ID remains a new observation, so a real
+  repeated follow-up is not discarded as transport noise.
+- Brief generation receives only the two most recent proactive pushes from the
+  last 18 hours, clipped to 360 characters each. This is enough to stop obvious
+  repetition without replaying the Telegram transcript.
+- Scheduled reminders are omitted from brief input entirely because they
+  deliver themselves. Changed urgency (`tomorrow` → `today` → `imminent` →
+  `overdue`) creates a new surface key so deadlines can break through the
+  anti-repeat cooldown.
+- The durable seen ledger is capped at 400 keys and expires entries after seven
+  days. It does not enter the model context.
+- The complete serialized digest snapshot has an 18,000-character ceiling;
+  per-source clipping alone can no longer add up to an unbounded prompt.
+- An event deferred into a digest now remains eligible until it is actually
+  delivered, ignored, or suppressed; it cannot silently age out after 26 hours.
+
+### Live Calendar proof before meeting reminders
+
+- Old Telegram prose may identify Phil as Phillip, but it is no longer accepted
+  as proof of a meeting date. Any meeting-relative reminder without an explicit
+  reminder fire time must first call live Calendar.
+- The runtime blocks `reminders_set` until Calendar returns exactly one matching
+  upcoming event whose start agrees with the proposed reminder and lead time.
+  “No events”, two candidates, the wrong day, or the 9:30 creative check-in
+  cannot authorize a guessed 2 PM reminder.
+- The Calendar query must cover the full requested local day (or a 14-day
+  horizon when no day is known), and truncated provider results are never
+  treated as proof of uniqueness.
+- Phil/Philip/Phillip are treated as one alias only while matching that
+  structured event. An unspecified “before” defaults to ten minutes; an
+  explicit lead such as “an hour before” is preserved.
+- If the model asks the owner before doing the Calendar read, Samantha gets one
+  bounded corrective pass that performs the private lookup rather than handing
+  the work back.
+- After a reminder mutation, low-information finals such as “Done.”, “All set”,
+  “I've set that”, a wrong clock, or a confirmation without the subject are
+  replaced by the authoritative deterministic receipt containing both the
+  reminder text and owner-local day/time.
+- A bare “Done” after any other successful mutation is likewise replaced by
+  the specific authoritative tool receipt.
+- Explicit reminder fire times are bound to the owner's date and clock before
+  mutation. A model-selected 2:50 PM cannot replace a requested 1:50 PM, and a
+  “3pm deadline” inside the subject cannot bypass live meeting lookup.
+
+### Owner authority on every turn
+
+- Every non-approval-gated private mutation is now checked against the action
+  class explicitly requested in the current Telegram turn, even before any
+  external source is read. A model mistake on “How does memory work?” cannot
+  save a fact, create a reminder, or alter Calendar/task state.
+- A plain “yes” can still redeem the exact visible reminder offer from either
+  a proactive push or the immediately preceding normal reply; that capability
+  remains limited to the private reminder action.
+
+The intended result for the supplied exchange is:
+
+> “I'll remind you tomorrow at 1:50 pm — ask Phil about how the referencer
+> should look and the upload folder structure.”
+
+## Token impact
+
+- No extra model call is used to shorten a drifting brief; delivery shaping is
+  deterministic code.
+- Recent-push anti-repeat context is capped at 720 characters total and separate
+  from the dialogue window.
+- Seen-item state stays in SQLite and contributes zero prompt tokens.
+- Shorter brief ceilings reduce both generated tokens and future Telegram
+  context. The stable persona remains about 1.2K tokens by the project's
+  conservative estimator and retains its prompt-cache breakpoint.
+- The Calendar corrective pass happens only when the model tries to ask before
+  doing the required private read; explicit-time reminders use the normal loop.
+
+## Verification before production
+
+- **333 offline tests pass**, including the exact 9:30 AM / Phillip-at-2 PM
+  sentence, structured Calendar proof, owner-local naive and UTC receipts,
+  clock-trigger timezone inspection, tomorrow-vs-tonight conversion, date-only
+  deadlines, 18-hour unresolved-item aging, urgency resurfacing, grounded
+  receipts, aggregate context limits, hard brief caps, and vague/wrong-time
+  confirmation replacement.
+- Formatting checks are clean.
+- A reusable live-model smoke now exercises both supplied Telegram failures in
+  a temporary database without starting Telegram or reading Google. Production
+  backup, Ubuntu x86_64 verification, this voice smoke, service restart, and
+  post-start observation are still required before this section claims deployment.
+
+---
+
 # Samantha v0.2.1 — Grounded Voice & Provider Recovery
 
 **Status:** deployed to production

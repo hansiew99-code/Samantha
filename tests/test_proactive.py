@@ -11,6 +11,7 @@ from samantha.proactive import (
     find_conflicts,
     imminent_meetings,
 )
+from samantha.db import kv_set
 from samantha.rules import RulesEngine
 
 TZ = ZoneInfo("Asia/Kuala_Lumpur")
@@ -86,6 +87,7 @@ async def test_scan_pushes_imminent_meeting_exactly_once(settings, conn, memory)
 
     assert await scanner.scan() == 1
     assert "Standup" in notifications[0] and "Zoom" in notifications[0]
+    assert "heads up" not in notifications[0].lower()
     # Runs every 10 min — but the same meeting must never be pushed twice.
     assert await scanner.scan() == 0
     assert len(notifications) == 1
@@ -136,9 +138,65 @@ async def test_multiple_calendar_findings_are_one_push(settings, conn, memory):
     notifications: list[str] = []
     scanner, _ = make_scanner(settings, conn, memory, events, notifications)
 
-    assert await scanner.scan() >= 2
+    # The conflict already names both imminent meetings, so repeating each as
+    # a separate start nudge would just make the alert sound like a memo.
+    assert await scanner.scan() == 1
     assert len(notifications) == 1
-    assert "A few calendar things" in notifications[0]
+    assert "double-booked" in notifications[0]
+    assert notifications[0].count("“A”") == 1
+    assert notifications[0].count("“B”") == 1
+    assert "starts in" not in notifications[0]
+    assert "A few calendar things" not in notifications[0]
+    assert "\n1." not in notifications[0]
+    assert await scanner.scan() == 0
+
+
+async def test_seen_conflict_does_not_hide_a_later_imminent_nudge(
+    settings, conn, memory
+):
+    now = datetime.now(TZ)
+    a = ev("a", "A", now + timedelta(minutes=10), now + timedelta(minutes=50))
+    b = ev("b", "B", now + timedelta(minutes=20), now + timedelta(hours=1))
+    notifications: list[str] = []
+    scanner, _ = make_scanner(settings, conn, memory, [a, b], notifications)
+    occurrences = sorted([
+        scanner._occurrence_key(a, TZ),
+        scanner._occurrence_key(b, TZ),
+    ])
+    kv_set(
+        conn,
+        f"nudge:conflict:{occurrences[0]}:{occurrences[1]}",
+        now.isoformat(),
+    )
+
+    assert await scanner.scan() == 2
+    assert "A starts" in notifications[0]
+    assert "B starts" in notifications[0]
+    assert "double-booked" not in notifications[0]
+
+
+async def test_calendar_push_is_two_plain_conversational_priorities_max(
+    settings, conn, memory
+):
+    now = datetime.now(TZ)
+    events = [
+        ev("a", "First call", now + timedelta(minutes=5), now + timedelta(minutes=7)),
+        ev("b", "Second call", now + timedelta(minutes=10), now + timedelta(minutes=12)),
+        ev("c", "Third call", now + timedelta(minutes=15), now + timedelta(minutes=17)),
+    ]
+    notifications: list[str] = []
+    scanner, _ = make_scanner(settings, conn, memory, events, notifications)
+
+    assert await scanner.scan() == 2
+    assert len(notifications) == 1
+    paragraphs = notifications[0].split("\n\n")
+    assert len(paragraphs) == 2
+    assert "First call" in paragraphs[0]
+    assert "Second call" in paragraphs[1]
+    assert "Third call" not in notifications[0]
+    assert "heads up" not in notifications[0].lower()
+    assert "A few calendar things" not in notifications[0]
+    assert "\n1." not in notifications[0] and "\n2." not in notifications[0]
 
 
 async def test_scan_noops_without_calendar(settings, conn, memory):

@@ -494,27 +494,41 @@ def _wire_proactivity(app: App) -> None:
     # off-hours they no-op and she rests. Clock-aligned via cron.
     step = settings.proactive_interval_minutes
     app.scheduler.add_job(
-        app.sweeper.run_sweep, CronTrigger(minute=f"*/{step}"), id="sweep"
+        app.sweeper.run_sweep,
+        CronTrigger(minute=f"*/{step}", timezone=settings.timezone),
+        id="sweep",
     )
     app.scheduler.add_job(
-        app.scanner.scan, CronTrigger(minute=f"*/{step}"), id="proactive-scan"
+        app.scanner.scan,
+        CronTrigger(minute=f"*/{step}", timezone=settings.timezone),
+        id="proactive-scan",
     )
 
     # Briefs: morning + afternoon on working days, evening every night.
     m, a, e = settings.morning_digest, settings.afternoon_digest, settings.evening_digest
     app.scheduler.add_job(
         app.digests.morning,
-        CronTrigger(day_of_week=settings.work_days, hour=m.hour, minute=m.minute),
+        CronTrigger(
+            day_of_week=settings.work_days,
+            hour=m.hour,
+            minute=m.minute,
+            timezone=settings.timezone,
+        ),
         id="digest-morning",
     )
     app.scheduler.add_job(
         app.digests.afternoon,
-        CronTrigger(day_of_week=settings.work_days, hour=a.hour, minute=a.minute),
+        CronTrigger(
+            day_of_week=settings.work_days,
+            hour=a.hour,
+            minute=a.minute,
+            timezone=settings.timezone,
+        ),
         id="digest-afternoon",
     )
     app.scheduler.add_job(
         app.digests.evening,
-        CronTrigger(hour=e.hour, minute=e.minute),
+        CronTrigger(hour=e.hour, minute=e.minute, timezone=settings.timezone),
         id="digest-evening",
     )
 
@@ -533,7 +547,9 @@ def _wire_consolidation(app: App) -> None:
         api_lock=app.brain._api_lock if app.brain else None,
     )
     app.scheduler.add_job(
-        app.consolidator.run, CronTrigger(hour=3, minute=0), id="consolidation",
+        app.consolidator.run,
+        CronTrigger(hour=3, minute=0, timezone=app.settings.timezone),
+        id="consolidation",
         misfire_grace_time=3600,
     )
 
