@@ -294,7 +294,7 @@ def _wire_proactivity(app: App) -> None:
     app.scanner = ProactiveScanner(settings, app.conn, app.rules, app.notify, gcal=app.gcal)
     app.digests = DigestService(
         settings, app.memory, app.bus, app.brain, app.notify,
-        gcal=app.gcal, gmail=app.gmail, conn=app.conn,
+        gcal=app.gcal, gmail=app.gmail, gchat=app.gchat, conn=app.conn,
     )
     if settings.dry_run:
         return  # sweeps and digests call the LLM — no background spend in a dry run

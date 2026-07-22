@@ -114,6 +114,11 @@ class GChatClient:
                 log.debug("gchat: listing messages for %s failed", name, exc_info=True)
         return out
 
+    def recent_inbound(self, since_iso: str, per_space: int = 5) -> list[dict]:
+        """Recent messages from other people (own/bot/empty filtered out) — what
+        a proactive brief should read on its own, without being asked."""
+        return select_new(self.recent_messages(since_iso, per_space), since=None, self_id=self.self_id)
+
     def poll_new(self, conn) -> list[dict]:
         """New inbound messages since the stored cursor. First run primes the
         cursor to 'now' and returns nothing (no backfill flood), matching the

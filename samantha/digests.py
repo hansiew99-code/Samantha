@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable
 from zoneinfo import ZoneInfo
 
@@ -30,15 +30,17 @@ Write the owner's morning brief in your own texting voice — the way you'd tap 
 it out, not a formatted report. Open with one line on the shape of the day, \
 then the calendar (times + anything they'd want flagged: a moved meeting, a \
 conflict, a tight turnaround), then what actually needs them today — tasks \
-due, unread email that genuinely matters (someone waiting on a reply, a \
-deadline), decisions sitting open. Call out the one or two things that will \
-bite if ignored. Skip empty sections without announcing them. Under 150 words, \
+due, unread email or Google Chat messages that genuinely matter (someone \
+waiting on a reply, a deadline), decisions sitting open. Call out the one or \
+two things that will bite if ignored. Skip empty sections without announcing \
+them. Under 150 words, \
 and sound like someone who's already looked at everything."""
 
 EVENING_INSTRUCTIONS = """\
 Write a short evening review in your own voice from the data below: what's on \
 tomorrow morning, and any loose end from today still hanging (an unanswered \
-email that matters, a task that slipped). Max 60 words. If there's genuinely \
+email or Chat message that matters, a task that slipped). Max 60 words. If \
+there's genuinely \
 nothing useful to say, reply with exactly NOTHING."""
 
 
@@ -52,6 +54,7 @@ class DigestService:
         notify: Notify,
         gcal=None,
         gmail=None,
+        gchat=None,
         conn=None,
     ) -> None:
         self.settings = settings
@@ -61,6 +64,7 @@ class DigestService:
         self.notify = notify
         self.gcal = gcal
         self.gmail = gmail
+        self.gchat = gchat
         self.conn = conn if conn is not None else memory.conn
 
     async def morning(self) -> None:
@@ -142,6 +146,15 @@ class DigestService:
                 )
             except Exception:
                 log.exception("digest: gmail fetch failed")
+
+        # Read Google Chat on her own, the same as the inbox — recent messages
+        # from other people the owner may not have replied to yet.
+        if self.gchat is not None:
+            try:
+                since = (now - timedelta(days=1)).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+                data["chat_messages"] = await asyncio.to_thread(self.gchat.recent_inbound, since, 5)
+            except Exception:
+                log.exception("digest: gchat fetch failed")
 
         data["open_tasks"] = [
             dict(r)

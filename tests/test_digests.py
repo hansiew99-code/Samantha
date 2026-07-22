@@ -32,7 +32,19 @@ class FakeGmail:
         return self.results
 
 
-def make_digests(settings, conn, memory, bus, script, notifications, gmail=None):
+class FakeChat:
+    """Just enough of GChatClient for the digest gather step."""
+
+    def __init__(self, results: list[dict]) -> None:
+        self.results = results
+        self.calls: list[str] = []
+
+    def recent_inbound(self, since_iso: str, per_space: int = 5) -> list[dict]:
+        self.calls.append(since_iso)
+        return self.results
+
+
+def make_digests(settings, conn, memory, bus, script, notifications, gmail=None, gchat=None):
     client = FakeAnthropicClient(script)
     brain = Brain(settings, memory, ToolRegistry(), Governor(conn, 1.0), client=client)
 
@@ -40,7 +52,10 @@ def make_digests(settings, conn, memory, bus, script, notifications, gmail=None)
         notifications.append(text)
 
     return (
-        DigestService(settings, memory, bus, brain, notify, gcal=None, gmail=gmail, conn=conn),
+        DigestService(
+            settings, memory, bus, brain, notify,
+            gcal=None, gmail=gmail, gchat=gchat, conn=conn,
+        ),
         client,
     )
 
@@ -81,6 +96,21 @@ async def test_morning_brief_actively_pulls_unread_email(settings, conn, memory,
     assert gmail.queries and "is:unread" in gmail.queries[0]  # inbox actually checked
     payload = client.calls[0]["messages"][0]["content"]
     assert "Deck review" in payload  # and the unread mail reached the model
+
+
+async def test_morning_brief_actively_reads_google_chat(settings, conn, memory, bus):
+    # "Read the chat without me prompting" — the brief must query Chat on its
+    # own and feed what it finds to the model, exactly like it does for Gmail.
+    chat = FakeChat([{"sender_name": "Marcus", "text": "you around later?", "create_time": "2026-07-22T08:00:00Z"}])
+    notifications: list[str] = []
+    script = [FakeResponse(content=[text_block("Morning — Marcus pinged you on Chat.")])]
+    digests, client = make_digests(settings, conn, memory, bus, script, notifications, gchat=chat)
+
+    await digests.morning()
+
+    assert chat.calls  # Chat was actually read, unprompted
+    payload = client.calls[0]["messages"][0]["content"]
+    assert "you around later?" in payload  # and the message reached the model
 
 
 async def test_evening_nothing_suppresses_push(settings, conn, memory, bus):

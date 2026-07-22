@@ -86,3 +86,14 @@ def test_poll_primes_then_returns_only_new_inbound(conn):
 
     # Nothing newer → nothing surfaced.
     assert gchat.poll_new(conn) == []
+
+
+def test_recent_inbound_drops_own_and_bot_messages():
+    messages = [
+        parse_message(raw("a", "users/me", "my note", "2026-07-22T08:00:00Z"), "s"),
+        parse_message(raw("b", "users/2", "hey you free?", "2026-07-22T08:30:00Z", dn="Sarah"), "s"),
+        parse_message(raw("c", "users/bot", "build passed", "2026-07-22T08:45:00Z", stype="BOT"), "s"),
+    ]
+    gchat = FakeGChat(messages, self_id="users/me")
+    inbound = gchat.recent_inbound("2026-07-22T00:00:00Z")
+    assert [m["text"] for m in inbound] == ["hey you free?"]
