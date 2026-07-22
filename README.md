@@ -47,7 +47,7 @@ That's enough to run: `.venv/bin/python -m samantha`. Everything else can be add
 4. `python scripts/setup_auth.py` — open the printed URL, approve, done. The refresh token lands in `google_token.json`.
 5. Set `GCHAT_SELF_ID=users/<id>` first, then `GCHAT_ENABLED=1` after consenting if Samantha should read Google Chat. The self ID is required so her own messages are never surfaced as incoming work.
 
-The current Google token requests `calendar.events`, `calendar.freebusy`, `gmail.readonly`, `gmail.send`, and read-only Chat access. If an older Samantha token used the previous broad scopes, run `scripts/setup_auth.py` again and re-consent. New/refreshed token files are restricted to owner read/write (`0600`). Samantha never needs your Google password. Treat `google_credentials.json`, `google_token.json`, `.env`, and the SQLite database as secrets; do not paste them into a chat, issue, commit, or pull request.
+New Google consent requests `calendar.events`, `calendar.freebusy`, `gmail.readonly`, `gmail.send`, and read-only Chat access. Existing Samantha tokens with the previous `calendar` and `gmail.modify` grants remain compatible and refresh with their original grants; re-consent is only needed when a token lacks a required capability. New, loaded, and refreshed token files are restricted to owner read/write (`0600`). Samantha never needs your Google password. Treat `google_credentials.json`, `google_token.json`, `.env`, and the SQLite database as secrets; do not paste them into a chat, issue, commit, or pull request.
 
 **Slack**
 1. [api.slack.com/apps](https://api.slack.com/apps) → Create New App → From scratch.
