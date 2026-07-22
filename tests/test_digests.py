@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pytest
 
 from samantha.brain import Brain
+from samantha.db import kv_get, kv_set
 from samantha.digests import DigestService
 from samantha.events import EventBus
 from samantha.governor import Governor
@@ -235,3 +239,136 @@ async def test_digest_refilters_backlog_after_suppression_rule_is_added(
         "SELECT disposition FROM events_queue WHERE id = ?", (eid,)
     ).fetchone()
     assert row["disposition"] == "suppressed"
+
+
+async def test_restart_does_not_resurrect_morning_after_afternoon_ran(
+    settings, conn, memory, bus, monkeypatch
+):
+    notifications: list[str] = []
+    digests, _ = make_digests(settings, conn, memory, bus, [], notifications)
+    calls: list[str] = []
+
+    async def record(name: str) -> None:
+        calls.append(name)
+
+    monkeypatch.setattr(digests, "morning", lambda **_kwargs: record("morning"))
+    monkeypatch.setattr(digests, "afternoon", lambda **_kwargs: record("afternoon"))
+    monkeypatch.setattr(digests, "evening", lambda **_kwargs: record("evening"))
+    today = "2026-07-22"
+    kv_set(conn, "digest.last_run.afternoon", today)
+
+    caught = await digests.catch_up(
+        datetime(2026, 7, 22, 18, 46, tzinfo=ZoneInfo(settings.timezone))
+    )
+
+    assert caught is None
+    assert calls == []
+
+
+async def test_restart_catches_only_latest_due_weekday_brief(
+    settings, conn, memory, bus, monkeypatch
+):
+    notifications: list[str] = []
+    digests, _ = make_digests(settings, conn, memory, bus, [], notifications)
+    calls: list[str] = []
+
+    async def record(name: str) -> None:
+        calls.append(name)
+
+    monkeypatch.setattr(digests, "morning", lambda **_kwargs: record("morning"))
+    monkeypatch.setattr(digests, "afternoon", lambda **_kwargs: record("afternoon"))
+    monkeypatch.setattr(digests, "evening", lambda **_kwargs: record("evening"))
+
+    caught = await digests.catch_up(
+        datetime(2026, 7, 22, 18, 46, tzinfo=ZoneInfo(settings.timezone))
+    )
+
+    assert caught == "afternoon"
+    assert calls == ["afternoon"]
+
+
+async def test_restart_on_weekend_only_catches_evening(
+    settings, conn, memory, bus, monkeypatch
+):
+    notifications: list[str] = []
+    digests, _ = make_digests(settings, conn, memory, bus, [], notifications)
+    calls: list[str] = []
+
+    async def record(name: str) -> None:
+        calls.append(name)
+
+    monkeypatch.setattr(digests, "morning", lambda **_kwargs: record("morning"))
+    monkeypatch.setattr(digests, "afternoon", lambda **_kwargs: record("afternoon"))
+    monkeypatch.setattr(digests, "evening", lambda **_kwargs: record("evening"))
+
+    caught = await digests.catch_up(
+        datetime(2026, 7, 25, 22, 0, tzinfo=ZoneInfo(settings.timezone))
+    )
+
+    assert caught == "evening"
+    assert calls == ["evening"]
+
+
+async def test_restart_skips_old_brief_when_next_slot_is_nearly_due(
+    settings, conn, memory, bus, monkeypatch
+):
+    notifications: list[str] = []
+    digests, _ = make_digests(settings, conn, memory, bus, [], notifications)
+    calls: list[str] = []
+
+    async def record(name: str) -> None:
+        calls.append(name)
+
+    monkeypatch.setattr(digests, "morning", lambda **_kwargs: record("morning"))
+    monkeypatch.setattr(digests, "afternoon", lambda **_kwargs: record("afternoon"))
+    monkeypatch.setattr(digests, "evening", lambda **_kwargs: record("evening"))
+
+    caught = await digests.catch_up(
+        datetime(2026, 7, 22, 13, 45, tzinfo=ZoneInfo(settings.timezone))
+    )
+
+    assert caught is None
+    assert calls == []
+
+
+async def test_restart_catchup_prompt_is_current_and_not_slot_theatre(
+    settings, conn, memory, bus
+):
+    notifications: list[str] = []
+    script = [FakeResponse(content=[text_block("Google Chat — Reanne's brief is in.")])]
+    digests, client = make_digests(
+        settings, conn, memory, bus, script, notifications
+    )
+
+    caught = await digests.catch_up(
+        datetime(2026, 7, 22, 18, 46, tzinfo=ZoneInfo(settings.timezone))
+    )
+
+    system_text = "\n".join(
+        block["text"] for block in client.calls[0]["system"] if "text" in block
+    )
+    assert caught == "afternoon"
+    assert "The local time is Wednesday 18:46" in system_text
+    assert "Never mention a restart, catch-up" in system_text
+    assert notifications == ["Google Chat — Reanne's brief is in."]
+
+
+async def test_failed_restart_catchup_is_left_unmarked_for_retry(
+    settings, conn, memory, bus
+):
+    notifications: list[str] = []
+    digests, _ = make_digests(
+        settings,
+        conn,
+        memory,
+        bus,
+        [RuntimeError("provider unavailable")],
+        notifications,
+    )
+
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        await digests.catch_up(
+            datetime(2026, 7, 22, 10, 0, tzinfo=ZoneInfo(settings.timezone))
+        )
+
+    assert kv_get(conn, "digest.last_run.morning") is None

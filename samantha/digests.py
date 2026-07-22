@@ -10,7 +10,7 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Awaitable, Callable
 from zoneinfo import ZoneInfo
 
@@ -103,31 +103,69 @@ class DigestService:
         self.clickup = clickup
         self.conn = conn if conn is not None else memory.conn
 
-    async def morning(self) -> None:
-        await self._digest(SONNET, MORNING_INSTRUCTIONS, "digest")
-        self._mark_run("morning")
+    async def morning(
+        self,
+        *,
+        extra_instructions: str = "",
+        run_date: date | None = None,
+    ) -> None:
+        await self._digest(
+            SONNET,
+            self._with_extra_instructions(MORNING_INSTRUCTIONS, extra_instructions),
+            "digest",
+        )
+        self._mark_run("morning", run_date)
 
-    async def afternoon(self) -> None:
-        await self._digest(HAIKU, AFTERNOON_INSTRUCTIONS, "digest")
-        self._mark_run("afternoon")
+    async def afternoon(
+        self,
+        *,
+        extra_instructions: str = "",
+        run_date: date | None = None,
+    ) -> None:
+        await self._digest(
+            HAIKU,
+            self._with_extra_instructions(AFTERNOON_INSTRUCTIONS, extra_instructions),
+            "digest",
+        )
+        self._mark_run("afternoon", run_date)
 
-    async def evening(self) -> None:
-        await self._digest(HAIKU, EVENING_INSTRUCTIONS, "digest")
-        self._mark_run("evening")
+    async def evening(
+        self,
+        *,
+        extra_instructions: str = "",
+        run_date: date | None = None,
+    ) -> None:
+        await self._digest(
+            HAIKU,
+            self._with_extra_instructions(EVENING_INSTRUCTIONS, extra_instructions),
+            "digest",
+        )
+        self._mark_run("evening", run_date)
 
-    def _mark_run(self, name: str) -> None:
-        today = datetime.now(ZoneInfo(self.settings.timezone)).date().isoformat()
-        kv_set(self.conn, f"digest.last_run.{name}", today)
+    @staticmethod
+    def _with_extra_instructions(base: str, extra: str) -> str:
+        return f"{base}\n\n{extra.strip()}" if extra.strip() else base
+
+    def _mark_run(self, name: str, run_date: date | None = None) -> None:
+        completed_date = run_date or datetime.now(
+            ZoneInfo(self.settings.timezone)
+        ).date()
+        kv_set(self.conn, f"digest.last_run.{name}", completed_date.isoformat())
 
     async def catch_up(self, now: datetime | None = None) -> str | None:
         """Run at most the latest missed brief after a restart, never a burst."""
         if self.brain is None:
             return None
-        local_now = now or datetime.now(ZoneInfo(self.settings.timezone))
+        local_zone = ZoneInfo(self.settings.timezone)
+        local_now = now or datetime.now(local_zone)
         if local_now.tzinfo is None:
-            local_now = local_now.replace(tzinfo=ZoneInfo(self.settings.timezone))
+            local_now = local_now.replace(tzinfo=local_zone)
+        else:
+            local_now = local_now.astimezone(local_zone)
         today = local_now.date().isoformat()
-        candidates: list[tuple[str, object, Callable[[], Awaitable[None]]]] = [
+        candidates: list[
+            tuple[str, time, Callable[..., Awaitable[None]]]
+        ] = [
             ("evening", self.settings.evening_digest, self.evening),
         ]
         if local_now.weekday() in self.settings.work_weekdays():
@@ -135,17 +173,46 @@ class DigestService:
                 ("afternoon", self.settings.afternoon_digest, self.afternoon),
                 ("morning", self.settings.morning_digest, self.morning),
             ])
-        for name, scheduled_time, method in sorted(
-            candidates, key=lambda item: item[1], reverse=True
-        ):
-            if local_now.time().replace(tzinfo=None) < scheduled_time:
-                continue
-            if kv_get(self.conn, f"digest.last_run.{name}") == today:
-                continue
-            log.info("catching up missed %s digest", name)
-            await method()
-            return name
-        return None
+        slots = [
+            (
+                name,
+                datetime.combine(local_now.date(), scheduled_time, tzinfo=local_zone),
+                method,
+            )
+            for name, scheduled_time, method in candidates
+        ]
+        due = [item for item in slots if local_now >= item[1]]
+        if not due:
+            return None
+
+        upcoming = [scheduled_at for _name, scheduled_at, _method in slots if scheduled_at > local_now]
+        if upcoming and min(upcoming) - local_now <= timedelta(minutes=30):
+            # A nearly-due brief has fresher framing.  Sending the old one now
+            # and the real one moments later would feel like a restart leak.
+            return None
+
+        # A later brief supersedes every earlier slot.  If the latest due slot
+        # already ran, there is nothing to catch up: falling through to an
+        # older missing key would resurrect a stale morning brief after the
+        # afternoon brief and make a restart visible to the owner.
+        name, scheduled_at, method = max(due, key=lambda item: item[1])
+        if kv_get(self.conn, f"digest.last_run.{name}") == today:
+            return None
+        log.info("catching up missed %s digest", name)
+        lag_minutes = max(0, int((local_now - scheduled_at).total_seconds() // 60))
+        catch_up_instructions = (
+            "This is an internal catch-up composed for the current moment. "
+            f"The local time is {local_now:%A %H:%M}; the scheduled slot was "
+            f"{scheduled_at:%H:%M} ({lag_minutes} minutes ago). Write for now, "
+            "not for the original slot. Never mention a restart, catch-up, or "
+            "call this a morning, afternoon, or evening brief. Omit calendar "
+            "events that have already ended. If nothing remains useful, return NOTHING."
+        )
+        await method(
+            extra_instructions=catch_up_instructions,
+            run_date=local_now.date(),
+        )
+        return name
 
     async def _digest(self, model: str, instructions: str, purpose: str) -> None:
         if self.brain is None:

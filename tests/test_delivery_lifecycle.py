@@ -21,8 +21,11 @@ class SchedulerRecorder:
     def __init__(self, events: list[str]) -> None:
         self.events = events
 
-    def start(self) -> None:
-        self.events.append("scheduler.start")
+    def start(self, paused: bool = False) -> None:
+        self.events.append(f"scheduler.start:{'paused' if paused else 'running'}")
+
+    def resume(self) -> None:
+        self.events.append("scheduler.resume")
 
 
 class RehydrateRecorder:
@@ -53,11 +56,14 @@ class SlackRecorder:
 
 
 class DigestRecorder:
-    def __init__(self, events: list[str]) -> None:
+    def __init__(self, events: list[str], error: Exception | None = None) -> None:
         self.events = events
+        self.error = error
 
     async def catch_up(self) -> None:
         self.events.append("digests.catch_up")
+        if self.error:
+            raise self.error
 
 
 async def test_app_starts_gateway_before_scheduler_replays_work(settings):
@@ -74,10 +80,11 @@ async def test_app_starts_gateway_before_scheduler_replays_work(settings):
 
     assert events == [
         "gateway.start",
-        "scheduler.start",
+        "scheduler.start:paused",
         "actions.recover",
         "reminders.rehydrate",
         "watchers.rehydrate",
+        "scheduler.resume",
     ]
 
 
@@ -93,7 +100,7 @@ async def test_dry_run_does_not_consume_persisted_commitments(settings):
 
     await app.start()
 
-    assert events == ["scheduler.start"]
+    assert events == ["scheduler.start:running"]
 
 
 async def test_source_health_is_established_before_catchup_digest(settings):
@@ -111,6 +118,23 @@ async def test_source_health_is_established_before_catchup_digest(settings):
     await app.start()
 
     assert events.index("slack.start") < events.index("digests.catch_up")
+    assert events.index("digests.catch_up") < events.index("scheduler.resume")
+
+
+async def test_failed_digest_catchup_does_not_block_scheduled_work(settings):
+    events: list[str] = []
+    app = App(settings=settings)
+    app.gateway = Recorder(events, "gateway")
+    app.scheduler = SchedulerRecorder(events)
+    app.reminders = RehydrateRecorder(events, "reminders")
+    app.watchers = RehydrateRecorder(events, "watchers")
+    app.actions = ActionsRecorder(events)
+    app.digests = DigestRecorder(events, RuntimeError("provider unavailable"))
+    settings.dry_run = False
+
+    await app.start()
+
+    assert events[-2:] == ["digests.catch_up", "scheduler.resume"]
 
 
 async def test_live_telegram_send_fails_loudly_before_initialization(settings):

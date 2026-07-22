@@ -29,6 +29,9 @@ The fix reserves strict schemas for four mutations that can immediately change a
 - A user retry or degraded response no longer acknowledges and discards the preceding proactive push. The referent closes only after a successfully delivered reply, command result, or button outcome.
 - Error copy is direct and truthful: it owns the failure, confirms that nothing changed, refuses to guess, and never asks the owner to repeat the message.
 - Error turns are excluded from replayed dialogue, preventing a temporary outage from bloating or polluting future context.
+- Restart catch-up now selects the latest due brief before consulting completion state. An already-run afternoon brief can no longer fall through to a stale morning brief merely because the service restarted.
+- Scheduled work stays paused during recovery, preventing a cron brief from racing its catch-up copy. A failed catch-up is logged and retried later without preventing reminders, watchers, or polling from starting.
+- A catch-up is written for the actual current time, omits elapsed calendar items, and stays quiet when the next scheduled brief is less than 30 minutes away.
 
 ## Human voice overhaul
 
@@ -51,7 +54,7 @@ Anthropic's current context guidance confirms that system text, message history,
 
 ## Verification
 
-- **252 tests pass locally**, including exact regressions for the screenshot's Reanne/Chat/Gmail question, zero model calls, provider schema limits, degraded Telegram delivery, proactive referent continuity, and banned robotic phrases.
+- **259 tests pass locally**, including exact regressions for the screenshot's Reanne/Chat/Gmail question, zero model calls, provider schema limits, degraded Telegram delivery, proactive referent continuity, banned robotic phrases, and restart catch-up ordering.
 - Full Ubuntu x86_64 tests, a real Anthropic tool-bundle smoke call, production service status, and post-restart logs are required before this entry is marked deployed.
 
 ## Still intentionally open

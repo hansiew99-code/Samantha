@@ -91,8 +91,16 @@ class App:
         # permanently consumed without ever reaching the owner.
         if self.gateway:
             await self.gateway.start()
-        self.scheduler.start()
-        if not self.settings.dry_run:
+        if self.settings.dry_run:
+            self.scheduler.start()
+            log.info("dry run: persisted reminders/watchers are not replayed or consumed")
+            return
+
+        # Calculate next-run times while keeping cron jobs paused.  Recovery
+        # can safely add reminder/watcher jobs to the live scheduler, but a
+        # scheduled brief cannot race the one-off restart catch-up.
+        self.scheduler.start(paused=True)
+        try:
             self.actions.recover_inflight()
             self.reminders.rehydrate()
             self.watchers.rehydrate()
@@ -102,9 +110,12 @@ class App:
             if self.slack:
                 await asyncio.to_thread(self.slack.start)
             if self.digests:
-                await self.digests.catch_up()
-        else:
-            log.info("dry run: persisted reminders/watchers are not replayed or consumed")
+                try:
+                    await self.digests.catch_up()
+                except Exception:  # noqa: BLE001 — startup must survive a missed brief
+                    log.exception("digest catch-up failed; scheduled work will continue")
+        finally:
+            self.scheduler.resume()
 
     async def stop(self) -> None:
         if self.gateway:
