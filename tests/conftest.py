@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import time
 
 import pytest
 
@@ -31,5 +32,8 @@ def settings(tmp_path) -> Settings:
         telegram_bot_token="",
         telegram_chat_id=0,
         db_path=tmp_path / "test.db",
+        # Unit tests must not change behaviour when the wall clock crosses the
+        # production quiet-hours boundary during an evening deployment.
+        quiet_hours=(time(0, 0), time(0, 0)),
         dry_run=True,
     )

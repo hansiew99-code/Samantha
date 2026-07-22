@@ -9,7 +9,10 @@ Two files are involved and they are NOT the same thing:
 
 Prereqs (Google Cloud Console, one time):
   1. Create a project; enable the Calendar, Gmail, and (for Chat) Chat APIs.
-  2. OAuth consent screen: type External, add yourself as a test user.
+  2. OAuth consent: Internal for an eligible Workspace, or External for a
+     personal account. Do not leave External in Testing for continuous use:
+     these scopes can otherwise produce seven-day refresh tokens. Move the app
+     to In production before relying on it, then consent as yourself.
   3. Create an OAuth client id of type "Desktop app" → Download JSON → save it
      next to this repo as google_credentials.json.
 
@@ -21,7 +24,8 @@ Run it:
         ssh -L 8765:localhost:8765 you@your-vps
         .venv/bin/python scripts/setup_auth.py --port 8765
     Open the printed URL in your laptop browser, approve every permission, and
-    the token lands in google_token.json here — nothing to copy afterwards.
+    the least-privilege token lands in google_token.json here with owner-only
+    file permissions — nothing to copy afterwards.
 """
 
 import argparse

@@ -51,7 +51,7 @@ class Settings:
     google_credentials_path: Path = Path("google_credentials.json")
     google_token_path: Path = Path("google_token.json")
     gchat_enabled_flag: bool = False
-    gchat_self_id: str = ""  # 'users/<id>' — own messages are filtered when set
+    gchat_self_id: str = ""  # required with GCHAT_ENABLED; prevents self-message alerts
     slack_bot_token: str = ""
     slack_app_token: str = ""
     clickup_api_token: str = ""
@@ -127,6 +127,13 @@ class Settings:
             problems.append("TELEGRAM_BOT_TOKEN looks corrupted (expected '<digits>:<token>').")
         if not self.telegram_chat_id:
             problems.append("TELEGRAM_CHAT_ID is missing or zero.")
+        if self.gchat_enabled_flag and not self.gchat_self_id:
+            problems.append(
+                "GCHAT_SELF_ID is required when GCHAT_ENABLED=1 so Samantha "
+                "does not treat your own Chat messages as incoming work."
+            )
+        elif self.gchat_enabled_flag and not self.gchat_self_id.startswith("users/"):
+            problems.append("GCHAT_SELF_ID must use the Google Chat form 'users/<id>'.")
         return problems
 
     def summary(self) -> str:

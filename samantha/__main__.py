@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import signal
 import sys
 
@@ -33,6 +34,9 @@ async def run(settings: Settings) -> None:
 
 
 def main() -> None:
+    # Messages, OAuth state and drafts live on disk. New files created by the
+    # daemon must be owner-only even if the host default is permissive.
+    os.umask(0o077)
     parser = argparse.ArgumentParser(prog="samantha")
     parser.add_argument("--check-config", action="store_true", help="print config summary and exit")
     parser.add_argument("--dry-run", action="store_true", help="never send anything outbound")

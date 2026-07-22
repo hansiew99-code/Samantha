@@ -43,7 +43,10 @@ def register(registry: ToolRegistry, rules: RulesEngine) -> None:
         input_schema={
             "type": "object",
             "properties": {
-                "source": {"type": "string", "enum": ["gmail", "slack", "clickup", "calendar", "*"]},
+                "source": {
+                    "type": "string",
+                    "enum": ["gmail", "gchat", "slack", "clickup", "calendar", "*"],
+                },
                 "action": {"type": "string", "enum": ["suppress", "vip"]},
                 "scope": {"type": "string", "description": "Sender email, channel, list name, or * for everything from the source."},
                 "detail": {"type": "string", "description": "Optional human-readable note about why."},

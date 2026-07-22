@@ -38,7 +38,7 @@ class FakeResponse:
 
 
 class _FakeMessages:
-    def __init__(self, script: list[FakeResponse]) -> None:
+    def __init__(self, script: list[FakeResponse | Exception]) -> None:
         self.script = list(script)
         self.calls: list[dict] = []
 
@@ -46,13 +46,16 @@ class _FakeMessages:
         self.calls.append(kwargs)
         if not self.script:
             raise AssertionError("fake client script exhausted")
-        return self.script.pop(0)
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
 
 class FakeAnthropicClient:
     """Plays back a scripted sequence of responses and records every request."""
 
-    def __init__(self, script: list[FakeResponse]) -> None:
+    def __init__(self, script: list[FakeResponse | Exception]) -> None:
         self.messages = _FakeMessages(script)
 
     @property

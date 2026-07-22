@@ -24,15 +24,16 @@ from zoneinfo import ZoneInfo
 
 from .config import Settings
 from .db import kv_get, kv_set
-from .events import in_work_hours
+from .events import in_quiet_hours, in_work_hours
 from .rules import RulesEngine
 
 log = logging.getLogger(__name__)
 
 Notify = Callable[[str], Awaitable[None]]
 
-MEETING_LEAD = timedelta(minutes=25)  # nudge once a meeting is within this window
+MEETING_LEAD = timedelta(minutes=25)  # minimum; scan cadence can widen this
 CONFLICT_HORIZON = timedelta(hours=48)  # look this far ahead for double-bookings
+DEDUPE_TTL = timedelta(days=7)
 SOURCE = "calendar"
 
 
@@ -102,10 +103,10 @@ def _fmt_time(dt: datetime) -> str:
 def meeting_line(ev: dict, start: datetime, now: datetime) -> str:
     mins = max(1, round((start - now).total_seconds() / 60))
     when = f"in about {mins} min" if mins > 1 else "in a minute"
-    line = f"heads up — {ev.get('summary', 'your next thing')} {when}"
+    line = f"{ev.get('summary', 'Your next thing')} starts {when}"
     if ev.get("location"):
-        line += f", at {ev['location']}"
-    return line
+        line += f" — {ev['location']}"
+    return line + "."
 
 
 def conflict_line(a: dict, b: dict, tz: ZoneInfo) -> str:
@@ -113,8 +114,8 @@ def conflict_line(a: dict, b: dict, tz: ZoneInfo) -> str:
     day = a_start.strftime("%a") if a_start else "soon"
     at = _fmt_time(a_start) if a_start else ""
     return (
-        f"you're double-booked {day} around {at}: “{a.get('summary', 'one')}” and "
-        f"“{b.get('summary', 'another')}” overlap. want me to move one?"
+        f"You're double-booked {day} around {at} — “{a.get('summary', 'one')}” and "
+        f"“{b.get('summary', 'another')}” overlap, so which one should move?"
     )
 
 
@@ -142,6 +143,8 @@ class ProactiveScanner:
             return 0
         tz = ZoneInfo(self.settings.timezone)
         now = datetime.now(tz)
+        if in_quiet_hours(now, self.settings.quiet_hours):
+            return 0
         if not in_work_hours(
             now,
             self.settings.work_weekdays(),
@@ -159,31 +162,103 @@ class ProactiveScanner:
             log.exception("proactive scan: calendar fetch failed")
             return 0
 
-        pushed = 0
+        # key, rendered thought, and any lower-value nudge keys that thought
+        # already covers.
+        candidates: list[tuple[str, str, tuple[str, ...]]] = []
+        lead = max(
+            MEETING_LEAD,
+            timedelta(minutes=self.settings.proactive_interval_minutes + 5),
+        )
 
-        # Meetings about to start.
-        for ev, start in imminent_meetings(events, now, tz):
-            if not self.rules.allows(SOURCE, str(ev.get("summary", ""))):
-                continue
-            if self._fire_once(f"nudge:meeting:{ev.get('id')}", now):
-                await self.notify(meeting_line(ev, start, now))
-                pushed += 1
-
-        # Double-bookings in the look-ahead window.
+        # Work out the actionable conflicts first. An event that is already
+        # named in a double-booking should not also appear as an imminent-event
+        # nudge in the same (or following) scan; the conflict carries the more
+        # useful fact and names both meetings.
+        conflicts: list[tuple[str, dict, dict]] = []
+        conflicts_by_occurrence: dict[str, list[str]] = {}
+        covered_meeting_keys: dict[str, list[str]] = {}
         for a, b in find_conflicts(events, now, tz):
-            ids = sorted([str(a.get("id")), str(b.get("id"))])
             if not self.rules.allows(SOURCE, str(a.get("summary", ""))):
                 continue
-            if self._fire_once(f"nudge:conflict:{ids[0]}:{ids[1]}", now):
-                await self.notify(conflict_line(a, b, tz))
-                pushed += 1
+            if not self.rules.allows(SOURCE, str(b.get("summary", ""))):
+                continue
+            occurrences = sorted([
+                self._occurrence_key(a, tz),
+                self._occurrence_key(b, tz),
+            ])
+            key = f"nudge:conflict:{occurrences[0]}:{occurrences[1]}"
+            if not self._unseen(key, now):
+                continue
+            conflicts.append((key, a, b))
+            covered_meeting_keys[key] = []
+            for occurrence in occurrences:
+                conflicts_by_occurrence.setdefault(occurrence, []).append(key)
 
-        return pushed
+        # Meetings about to start.
+        for ev, start in imminent_meetings(events, now, tz, lead=lead):
+            if not self.rules.allows(SOURCE, str(ev.get("summary", ""))):
+                continue
+            # Include the occurrence time: providers can reuse an event id for
+            # a recurring meeting, and a moved meeting deserves a fresh nudge.
+            key = f"nudge:meeting:{ev.get('id')}:{start.isoformat()}"
+            covering_conflicts = conflicts_by_occurrence.get(
+                self._occurrence_key(ev, tz), []
+            )
+            if covering_conflicts:
+                for conflict_key in covering_conflicts:
+                    covered_meeting_keys[conflict_key].append(key)
+                continue
+            if self._unseen(key, now):
+                candidates.append((key, meeting_line(ev, start, now), ()))
 
-    def _fire_once(self, key: str, now: datetime) -> bool:
-        """True the first time a nudge key is seen; records it so it never
-        fires again."""
-        if kv_get(self.conn, key) is not None:
+        # Double-bookings in the look-ahead window.
+        for key, a, b in conflicts:
+            candidates.append((
+                key,
+                conflict_line(a, b, tz),
+                tuple(covered_meeting_keys[key]),
+            ))
+
+        if not candidates:
+            return 0
+        # One considered interruption per scan, with no more than two things
+        # competing for attention. Separate thoughts read like a quick human
+        # note rather than a numbered status report.
+        bounded = candidates[:2]
+        text = "\n\n".join(line for _key, line, _covered in bounded)
+        try:
+            await self.notify(text)
+        except Exception:
+            log.exception("proactive calendar notification failed")
+            return 0
+        for key, _line, covered in bounded:
+            kv_set(self.conn, key, now.isoformat())
+            for covered_key in covered:
+                kv_set(self.conn, covered_key, now.isoformat())
+        return len(bounded)
+
+    def _unseen(self, key: str, now: datetime) -> bool:
+        seen_at = kv_get(self.conn, key)
+        return seen_at is None or self._dedupe_expired(seen_at, now)
+
+    @staticmethod
+    def _occurrence_key(event: dict, tz: ZoneInfo) -> str:
+        start = _parse_dt(event.get("start"), tz)
+        end = _parse_dt(event.get("end"), tz)
+        return ":".join([
+            str(event.get("id", "unknown")),
+            start.isoformat() if start else str(event.get("start", "")),
+            end.isoformat() if end else str(event.get("end", "")),
+        ])
+
+    @staticmethod
+    def _dedupe_expired(value: str, now: datetime) -> bool:
+        try:
+            seen_at = datetime.fromisoformat(value)
+        except (TypeError, ValueError):
+            # Preserve old/unknown dedupe entries rather than risk a burst of
+            # repeated notifications after an upgrade.
             return False
-        kv_set(self.conn, key, now.isoformat())
-        return True
+        if seen_at.tzinfo is None:
+            seen_at = seen_at.replace(tzinfo=now.tzinfo)
+        return now - seen_at.astimezone(now.tzinfo) > DEDUPE_TTL

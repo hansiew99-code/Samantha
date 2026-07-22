@@ -43,16 +43,45 @@ async def test_discard_prevents_send(actions):
     assert "already" in result and "discarded" in result
 
 
-async def test_failed_executor_marks_failed(actions, conn):
+async def test_failed_executor_is_quarantined_as_uncertain(actions, conn):
     async def executor(_payload: dict) -> str:
         raise RuntimeError("smtp exploded")
 
     actions.register_executor("gmail_send", executor)
     aid = actions.create("gmail_send", {"to": "a@b.c"}, "preview")
     result = await actions.approve(aid)
-    assert "failed" in result.lower()
+    assert "may have gone through" in result.lower()
     row = conn.execute("SELECT status FROM pending_actions WHERE id = ?", (aid,)).fetchone()
-    assert row["status"] == "failed"
+    assert row["status"] == "uncertain"
+    assert "already uncertain" in (await actions.approve(aid))
+
+
+def test_restart_quarantines_inflight_action(actions, conn):
+    aid = actions.create("gmail_send", {"to": "a@b.c"}, "preview")
+    conn.execute(
+        "UPDATE pending_actions SET status = 'executing' WHERE id = ?", (aid,)
+    )
+    conn.commit()
+
+    assert actions.recover_inflight() == 1
+    assert conn.execute(
+        "SELECT status FROM pending_actions WHERE id = ?", (aid,)
+    ).fetchone()[0] == "uncertain"
+
+
+async def test_edit_invalidates_old_send_button(actions, conn):
+    sent: list[dict] = []
+
+    async def executor(payload: dict) -> str:
+        sent.append(payload)
+        return "sent"
+
+    actions.register_executor("gmail_send", executor)
+    aid = actions.create("gmail_send", {"to": "a@b.c"}, "old draft")
+
+    assert actions.request_edit(aid) is True
+    assert "already editing" in (await actions.approve(aid))
+    assert sent == []
 
 
 async def test_draft_tool_creates_pending_action_and_notifies(conn, actions):

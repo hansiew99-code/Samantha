@@ -13,6 +13,9 @@ WorkingDirectory=/opt/samantha
 ExecStart=/opt/samantha/.venv/bin/python -m samantha
 Restart=always
 RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
 Environment=PYTHONUNBUFFERED=1
 # Secrets live in /opt/samantha/.env, loaded by the app itself.
 

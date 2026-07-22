@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from .router import HAIKU, OPUS
 
@@ -70,9 +72,15 @@ def price_usage(model: str, usage: Usage, batch: bool = False) -> float:
 
 
 class Governor:
-    def __init__(self, conn: sqlite3.Connection, daily_budget_usd: float) -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        daily_budget_usd: float,
+        timezone_name: str = "UTC",
+    ) -> None:
         self.conn = conn
         self.daily_budget_usd = daily_budget_usd
+        self.timezone_name = timezone_name
 
     def record(self, model: str, purpose: str, usage: Usage, batch: bool = False) -> float:
         cost = price_usage(model, usage, batch=batch)
@@ -95,18 +103,28 @@ class Governor:
         return cost
 
     def spent_today(self) -> float:
+        now = datetime.now(ZoneInfo(self.timezone_name))
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         row = self.conn.execute(
             "SELECT COALESCE(SUM(cost_usd), 0) AS c FROM spend_log "
-            "WHERE created_at >= date('now')"
+            "WHERE created_at >= ?",
+            (self._utc_sql_timestamp(start),),
         ).fetchone()
         return float(row["c"])
 
     def spent_month(self) -> float:
+        now = datetime.now(ZoneInfo(self.timezone_name))
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         row = self.conn.execute(
             "SELECT COALESCE(SUM(cost_usd), 0) AS c FROM spend_log "
-            "WHERE created_at >= date('now', 'start of month')"
+            "WHERE created_at >= ?",
+            (self._utc_sql_timestamp(start),),
         ).fetchone()
         return float(row["c"])
+
+    @staticmethod
+    def _utc_sql_timestamp(value: datetime) -> str:
+        return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
     # -- budget modes (BRIEF §9) ---------------------------------------------
 
@@ -135,8 +153,15 @@ class Governor:
         rows = self.conn.execute(
             "SELECT model, COUNT(*) AS calls, SUM(cost_usd) AS cost, "
             "SUM(cache_read_tokens) AS cached "
-            "FROM spend_log WHERE created_at >= date('now') "
-            "GROUP BY model ORDER BY cost DESC"
+            "FROM spend_log WHERE created_at >= ? "
+            "GROUP BY model ORDER BY cost DESC",
+            (
+                self._utc_sql_timestamp(
+                    datetime.now(ZoneInfo(self.timezone_name)).replace(
+                        hour=0, minute=0, second=0, microsecond=0
+                    )
+                ),
+            ),
         ).fetchall()
         if rows:
             lines.append("Today by model:")

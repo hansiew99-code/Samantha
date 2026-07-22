@@ -34,14 +34,20 @@ def register(
             p = json.loads(r["payload"])
             lines.append(
                 f"[{r['created_at']}] {r['kind']} in {p.get('channel')} "
-                f"from {p.get('user')}: {p.get('text', '')}"
+                f"from {p.get('user')} [reply thread_ts={p.get('thread_ts') or p.get('ts')}]: "
+                f"{p.get('text', '')}"
             )
         return "\n".join(lines)
 
-    async def slack_draft_reply(channel: str, text: str) -> str:
-        preview = f"💬 Slack → {channel}:\n\n{text}"
+    async def slack_draft_reply(
+        channel: str, text: str, thread_ts: str | None = None
+    ) -> str:
+        destination = f"{channel} (thread {thread_ts})" if thread_ts else channel
+        preview = f"💬 Slack → {destination}:\n\n{text}"
         action_id = actions.create(
-            "slack_send", {"channel": channel, "text": text}, preview
+            "slack_send",
+            {"channel": channel, "text": text, "thread_ts": thread_ts},
+            preview,
         )
         await notify_draft(action_id, preview)
         return (
@@ -74,6 +80,10 @@ def register(
             "properties": {
                 "channel": {"type": "string"},
                 "text": {"type": "string"},
+                "thread_ts": {
+                    "type": "string",
+                    "description": "Pass the reply thread_ts shown by slack_recent to answer in context.",
+                },
             },
             "required": ["channel", "text"],
         },

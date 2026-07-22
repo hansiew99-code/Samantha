@@ -2,7 +2,7 @@
 
 import base64
 
-from samantha.integrations.gmail import extract_body
+from samantha.integrations.gmail import _http_status, extract_body
 
 
 def b64(text: str) -> str:
@@ -41,3 +41,14 @@ def test_extract_nested_multipart():
 def test_extract_handles_missing_body():
     assert extract_body({"mimeType": "text/plain", "body": {}}) == ""
     assert extract_body({}) == ""
+
+
+def test_only_an_actual_404_is_treated_as_expired_history():
+    class Response:
+        status = 404
+
+    expired = RuntimeError("expired")
+    expired.resp = Response()
+
+    assert _http_status(expired) == 404
+    assert _http_status(TimeoutError("network")) is None

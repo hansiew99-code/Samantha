@@ -8,7 +8,7 @@ Samantha is a personal AI assistant modeled on Samantha from *Her* / Andy from *
 
 **Confirmed decisions:**
 
-- **Hosting:** free cloud VPS (Oracle Cloud Always Free tier or equivalent) — RM0/month, runs 24/7 as a systemd service.
+- **Hosting:** one Ubuntu x86_64 Google Cloud `e2-micro`, eligible US Free Tier region, standard disk, and no paid managed services. A public IPv4 and the Anthropic API are separately billable; see `deploy/setup_vps.md` for the strict-$0 networking boundary.
 - **v1 integrations:** Google Calendar, Gmail, Slack, ClickUp — plus Telegram as the chat interface.
 - **Autonomy:** *confirm outbound only* — she freely manages the owner's own things (calendar events, reminders, task states); anything reaching another person (send email, Slack reply) is drafted and requires a Telegram tap-to-approve.
 - **Usage volume:** moderate, 20–60 messages/day.
@@ -133,7 +133,7 @@ When the user says *"stop reminding me about stuff from ClickUp"*, Haiku calls t
 
 ## 8. Integrations & tool surface
 
-All tools are Python functions exposed to Claude via the SDK tool loop. **Prescriptive descriptions** stating *when* to call each tool (this measurably improves routing on current models). Fixed, sorted tool list — never varies per request (cache stability).
+All tools are Python functions exposed to Claude via the SDK tool loop. **Prescriptive descriptions** state *when* to call each tool. Interactive chat uses a fixed, sorted tool list for cache stability; deterministic background jobs use an intentionally separate tool-free request shape.
 
 | Tool | Notes |
 |---|---|
@@ -160,7 +160,7 @@ All tools are Python functions exposed to Claude via the SDK tool loop. **Prescr
 2. Haiku-first routing (§4).
 3. Bounded context assembly (§5) — cost independent of memory size.
 4. Batched sweeps + Batch API for the nightly job (50% off).
-5. **Prompt caching**: `cache_control: {"type": "ephemeral"}` on the last system block. Note the minimum cacheable prefix: **4,096 tokens on Haiku 4.5 / Opus 4.8, 2,048 on Sonnet**. Keep the system+core block ~2–3K: it will cache on Sonnet/Opus calls; on Haiku it silently won't — that's fine, Haiku input is cheap, and *leanness beats caching* at this scale. Verify with `usage.cache_read_input_tokens` in the spend log.
+5. **Prompt caching**: `cache_control: {"type": "ephemeral"}` on the last system block. Current minimum cacheable prefixes are **4,096 tokens on Haiku 4.5** and **1,024 on Sonnet 5 / Opus 4.8**. Keep the system+core block lean and verify real hits with `usage.cache_read_input_tokens`; caching lowers repeated processing cost/latency but does not remove those tokens from the context window.
 6. `max_tokens` caps per route (Haiku 1024, Sonnet 2048, Opus 4096); tool results truncated to what's needed (e.g. email bodies clipped to first ~1,500 chars for triage).
 
 **Budget governor:** every API response's `usage` block is priced (including cache read/write rates and batch discounts) into `spend_log`. Daily budget **$0.177** (= $5.30/30):
@@ -177,7 +177,7 @@ All tools are Python functions exposed to Claude via the SDK tool loop. **Prescr
 | **Moderate (~30 msgs/day)** | ~85/13/2 model mix, ~1.5 calls/msg, sweeps + digests + batch | **RM12–20** |
 | Upper-moderate (~60 msgs/day) | governor actively throttling Opus/Sonnet | **capped at RM25** |
 
-Line items inside the moderate estimate: interactive chat ≈ RM8–13, digests ≈ RM2–3, sweeps ≈ RM1–2, nightly consolidation (batch) ≈ RM1–2. Sonnet-5 intro pricing (through Aug 2026) sits inside these ranges; expect the top of the range after it lapses. **The budget cannot balloon over time** because per-call context is bounded (§5) and the governor is a hard ceiling — the failure mode is graceful degradation, never a surprise bill.
+Line items inside the moderate estimate: interactive chat ≈ RM8–13, digests ≈ RM2–3, sweeps ≈ RM1–2, nightly consolidation (batch) ≈ RM1–2. Sonnet-5 intro pricing (through Aug 2026) sits inside these ranges; expect the top of the range after it lapses. Per-call context is bounded (§5), and the governor stops starting new model calls once recorded daily spend reaches the configured limit. One request already in flight can still cross that figure, so this is a strong spend gate rather than a prepaid hard ceiling.
 
 ## 10. Personality
 
@@ -185,7 +185,7 @@ System prompt defines her voice: warm, wry, anticipatory, radically competent �
 
 ## 11. Build phases (execute in order; each ends with a working milestone)
 
-**Phase 0 — Skeleton.** Repo layout, `pyproject.toml`, config loader, SQLite schema + migrations, Telegram gateway echoing messages, chat-ID allowlist, systemd unit + deploy notes for Oracle Always Free. *Milestone: message her, she echoes, survives reboot.*
+**Phase 0 — Skeleton.** Repo layout, `pyproject.toml`, config loader, SQLite schema + migrations, Telegram gateway echoing messages, chat-ID allowlist, systemd unit + deploy notes for Google Cloud Free Tier. *Milestone: message her, she echoes, survives reboot.*
 
 **Phase 1 — Brain + memory + reminders.** Anthropic tool loop, router with Haiku default + `escalate`, context assembly (§5), `memory.*`, `reminders.*`, spend logging. *Milestone: "remind me to call mum tomorrow at 6pm" → fires on time, zero tokens at fire; "remember I'm allergic to peanuts" → recalled next day.*
 

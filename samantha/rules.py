@@ -67,7 +67,9 @@ class RulesEngine:
         for rule in self.active_rules():
             if rule["action"] != VIP:
                 continue
-            if rule["source"] in (source, "*") and rule["scope"] != "*" and rule["scope"] in scope:
+            if rule["source"] in (source, "*") and (
+                rule["scope"] == "*" or rule["scope"] in scope
+            ):
                 return True
         return False
 
