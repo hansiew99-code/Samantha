@@ -1,6 +1,6 @@
 # Samantha v0.2.1 — Grounded Voice & Provider Recovery
 
-**Status:** deployment candidate
+**Status:** deployed to production
 
 **Prepared:** 22 July 2026
 
@@ -55,7 +55,11 @@ Anthropic's current context guidance confirms that system text, message history,
 ## Verification
 
 - **259 tests pass locally**, including exact regressions for the screenshot's Reanne/Chat/Gmail question, zero model calls, provider schema limits, degraded Telegram delivery, proactive referent continuity, banned robotic phrases, and restart catch-up ordering.
-- Full Ubuntu x86_64 tests, a real Anthropic tool-bundle smoke call, production service status, and post-restart logs are required before this entry is marked deployed.
+- The exact release code at `335d30f` passed all **259 tests on Ubuntu x86_64** before production was advanced.
+- The production-configured 22-tool bundle was accepted by a real Anthropic smoke request. The final restart/catch-up patch does not touch that provider bundle.
+- A read-only check against the live database answered the exact screenshot question with its real provenance: “Gmail — Reanne's August brief came through there.”
+- Production reached `active/running` with zero restarts, resumed all three persisted reminders, emitted no stale catch-up brief, and recorded no error-level entries after the final restart on 22 July 2026.
+- The pre-upgrade SQLite backup passed `PRAGMA integrity_check` before deployment.
 
 ## Still intentionally open
 

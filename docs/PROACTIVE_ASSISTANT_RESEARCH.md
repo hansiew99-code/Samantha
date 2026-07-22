@@ -4,7 +4,7 @@
 
 **Scope:** proactivity, human tone, durable memory, context/token efficiency, autonomy, source coverage, and trust
 
-**Implementation reference:** the v0.2.1 candidate described in [PATCH_NOTES.md](../PATCH_NOTES.md)
+**Implementation reference:** the deployed v0.2.1 release described in [PATCH_NOTES.md](../PATCH_NOTES.md)
 
 ## Executive conclusion
 
@@ -23,7 +23,7 @@ The model is one component. The “assistant” is the whole harness around it.
 
 ## Status legend
 
-- **Implemented** — present in this branch; still needs branch-level and live staging verification.
+- **Implemented** — present in the deployed v0.2.1 release and covered by its verification suite.
 - **Partial** — a useful slice exists, but it does not meet the full target.
 - **Next** — research-backed follow-up, not present in this branch.
 
