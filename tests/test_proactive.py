@@ -70,12 +70,11 @@ def make_scanner(settings, conn, memory, events, notifications):
     async def notify(text: str) -> None:
         notifications.append(text)
 
-    # Pin quiet hours far from "now" so conflict nudges (which respect them) fire.
-    now = datetime.now(TZ)
-    settings.quiet_hours = (
-        (now + timedelta(hours=6)).time(),
-        (now + timedelta(hours=7)).time(),
-    )
+    # Open the working window to all hours/days so the scan runs whenever the
+    # suite runs. Off-hours gating gets its own test below.
+    settings.work_days = "mon-sun"
+    settings.work_start_hour = 0
+    settings.work_end_hour = 24
     return ProactiveScanner(settings, conn, rules, notify, gcal=FakeGCal(events)), rules
 
 
@@ -124,3 +123,16 @@ async def test_scan_noops_without_calendar(settings, conn, memory):
 
     scanner = ProactiveScanner(settings, conn, rules, notify, gcal=None)
     assert await scanner.scan() == 0
+
+
+async def test_scan_rests_outside_working_hours(settings, conn, memory):
+    now = datetime.now(TZ)
+    events = [ev("m1", "Standup", now + timedelta(minutes=10), now + timedelta(minutes=25))]
+    notifications: list[str] = []
+    scanner, _ = make_scanner(settings, conn, memory, events, notifications)
+    # Constrain the window to a day that isn't today → she's off the clock.
+    names = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    settings.work_days = names[(now.weekday() + 1) % 7]
+
+    assert await scanner.scan() == 0
+    assert notifications == []

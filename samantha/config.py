@@ -24,6 +24,24 @@ def _parse_quiet_hours(value: str) -> tuple[time, time]:
     return _parse_hhmm(start), _parse_hhmm(end)
 
 
+def _parse_hour_range(value: str) -> tuple[int, int]:
+    start, end = value.split("-")
+    return int(start.strip()), int(end.strip())
+
+
+# Python's datetime.weekday(): Monday=0 … Sunday=6.
+_DAY_IDX = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+
+
+def parse_weekdays(spec: str) -> set[int]:
+    """'mon-fri' → {0,1,2,3,4}; 'mon,wed,fri' → {0,2,4}."""
+    spec = spec.strip().lower()
+    if "-" in spec:
+        a, b = spec.split("-")
+        return set(range(_DAY_IDX[a.strip()], _DAY_IDX[b.strip()] + 1))
+    return {_DAY_IDX[d.strip()] for d in spec.split(",") if d.strip() in _DAY_IDX}
+
+
 @dataclass
 class Settings:
     anthropic_api_key: str = ""
@@ -43,8 +61,16 @@ class Settings:
     timezone: str = "Asia/Kuala_Lumpur"
     daily_budget_usd: float = 0.177
     quiet_hours: tuple[time, time] = field(default_factory=lambda: (time(23, 0), time(7, 0)))
-    morning_digest: time = field(default_factory=lambda: time(7, 30))
-    evening_digest: time = field(default_factory=lambda: time(21, 30))
+    morning_digest: time = field(default_factory=lambda: time(9, 0))
+    afternoon_digest: time = field(default_factory=lambda: time(14, 0))
+    evening_digest: time = field(default_factory=lambda: time(21, 0))
+    # Proactive cadence: sweeps + calendar scans fire this often, but only
+    # inside the working window (weekdays 08:00–19:00 by default). Off-hours she
+    # rests — the 21:00 evening brief covers anything that landed after close.
+    work_days: str = "mon-fri"  # cron-style; also parsed to weekday ints
+    work_start_hour: int = 8
+    work_end_hour: int = 19  # exclusive
+    proactive_interval_minutes: int = 30
     dry_run: bool = False
 
     @property
@@ -58,6 +84,10 @@ class Settings:
     @property
     def google_enabled(self) -> bool:
         return self.google_token_path.exists()
+
+    def work_weekdays(self) -> set[int]:
+        """The working days as datetime.weekday() ints, for the work-hours gate."""
+        return parse_weekdays(self.work_days)
 
     @property
     def gchat_enabled(self) -> bool:
@@ -104,6 +134,10 @@ class Settings:
             f"db: {self.db_path}",
             f"timezone: {self.timezone}",
             f"daily budget: ${self.daily_budget_usd:.3f}",
+            f"proactive: every {self.proactive_interval_minutes}m, {self.work_days} "
+            f"{self.work_start_hour:02d}:00–{self.work_end_hour:02d}:00",
+            f"briefs: morning {self.morning_digest:%H:%M} / afternoon "
+            f"{self.afternoon_digest:%H:%M} / evening {self.evening_digest:%H:%M}",
             f"dry run: {self.dry_run}",
             f"anthropic: {'ok' if self.anthropic_enabled else 'MISSING'}",
             f"telegram: {'ok' if self.telegram_enabled else 'MISSING'}",
@@ -135,7 +169,12 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         timezone=env.get("SAMANTHA_TIMEZONE", "Asia/Kuala_Lumpur"),
         daily_budget_usd=float(env.get("SAMANTHA_DAILY_BUDGET_USD", "0.177")),
         quiet_hours=_parse_quiet_hours(env.get("SAMANTHA_QUIET_HOURS", "23:00-07:00")),
-        morning_digest=_parse_hhmm(env.get("SAMANTHA_MORNING_DIGEST", "07:30")),
-        evening_digest=_parse_hhmm(env.get("SAMANTHA_EVENING_DIGEST", "21:30")),
+        morning_digest=_parse_hhmm(env.get("SAMANTHA_MORNING_DIGEST", "09:00")),
+        afternoon_digest=_parse_hhmm(env.get("SAMANTHA_AFTERNOON_DIGEST", "14:00")),
+        evening_digest=_parse_hhmm(env.get("SAMANTHA_EVENING_DIGEST", "21:00")),
+        work_days=env.get("SAMANTHA_WORK_DAYS", "mon-fri").strip(),
+        work_start_hour=_parse_hour_range(env.get("SAMANTHA_WORK_HOURS", "8-19"))[0],
+        work_end_hour=_parse_hour_range(env.get("SAMANTHA_WORK_HOURS", "8-19"))[1],
+        proactive_interval_minutes=int(env.get("SAMANTHA_PROACTIVE_INTERVAL_MIN", "30")),
         dry_run=env.get("SAMANTHA_DRY_RUN", "0") in ("1", "true", "yes"),
     )

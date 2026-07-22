@@ -36,6 +36,14 @@ two things that will bite if ignored. Skip empty sections without announcing \
 them. Under 150 words, \
 and sound like someone who's already looked at everything."""
 
+AFTERNOON_INSTRUCTIONS = """\
+Write a short afternoon check-in in your own texting voice from the data below: \
+what's still on for the rest of today (remaining meetings, tasks due), plus \
+anything that landed since this morning worth acting on before end of day — an \
+email or Google Chat message waiting on a reply, a deadline. Skip what's \
+clearly handled. Under 100 words. If there's genuinely nothing worth saying, \
+reply with exactly NOTHING."""
+
 EVENING_INSTRUCTIONS = """\
 Write a short evening review in your own voice from the data below: what's on \
 tomorrow morning, and any loose end from today still hanging (an unanswered \
@@ -69,6 +77,9 @@ class DigestService:
 
     async def morning(self) -> None:
         await self._digest(SONNET, MORNING_INSTRUCTIONS, "digest")
+
+    async def afternoon(self) -> None:
+        await self._digest(HAIKU, AFTERNOON_INSTRUCTIONS, "digest")
 
     async def evening(self) -> None:
         await self._digest(HAIKU, EVENING_INSTRUCTIONS, "digest")

@@ -49,8 +49,6 @@ log = logging.getLogger(__name__)
 GMAIL_POLL_MINUTES = 5
 GCHAT_POLL_MINUTES = 3
 CLICKUP_POLL_MINUTES = 10
-SWEEP_MINUTES = 30
-PROACTIVE_SCAN_MINUTES = 10
 
 
 @dataclass
@@ -298,22 +296,33 @@ def _wire_proactivity(app: App) -> None:
     )
     if settings.dry_run:
         return  # sweeps and digests call the LLM — no background spend in a dry run
+
+    # Proactive heartbeat: inbox triage + calendar look-ahead every N minutes.
+    # Both self-gate to the working window (weekdays 08:00–19:00 by default), so
+    # off-hours they no-op and she rests. Clock-aligned via cron.
+    step = settings.proactive_interval_minutes
     app.scheduler.add_job(
-        app.sweeper.run_sweep, "interval", minutes=SWEEP_MINUTES, id="sweep"
+        app.sweeper.run_sweep, CronTrigger(minute=f"*/{step}"), id="sweep"
     )
-    # Unprompted calendar look-ahead — zero-token nudges, so it runs on its own
-    # cadence regardless of the LLM budget.
     app.scheduler.add_job(
-        app.scanner.scan, "interval", minutes=PROACTIVE_SCAN_MINUTES, id="proactive-scan"
+        app.scanner.scan, CronTrigger(minute=f"*/{step}"), id="proactive-scan"
     )
+
+    # Briefs: morning + afternoon on working days, evening every night.
+    m, a, e = settings.morning_digest, settings.afternoon_digest, settings.evening_digest
     app.scheduler.add_job(
         app.digests.morning,
-        CronTrigger(hour=settings.morning_digest.hour, minute=settings.morning_digest.minute),
+        CronTrigger(day_of_week=settings.work_days, hour=m.hour, minute=m.minute),
         id="digest-morning",
     )
     app.scheduler.add_job(
+        app.digests.afternoon,
+        CronTrigger(day_of_week=settings.work_days, hour=a.hour, minute=a.minute),
+        id="digest-afternoon",
+    )
+    app.scheduler.add_job(
         app.digests.evening,
-        CronTrigger(hour=settings.evening_digest.hour, minute=settings.evening_digest.minute),
+        CronTrigger(hour=e.hour, minute=e.minute),
         id="digest-evening",
     )
 

@@ -98,6 +98,20 @@ async def test_morning_brief_actively_pulls_unread_email(settings, conn, memory,
     assert "Deck review" in payload  # and the unread mail reached the model
 
 
+async def test_afternoon_checkin_one_haiku_call(settings, conn, memory, bus):
+    conn.execute("INSERT INTO tasks(source, title, due_at) VALUES ('local', 'Send contract', '2026-07-22')")
+    conn.commit()
+    notifications: list[str] = []
+    script = [FakeResponse(content=[text_block("Still on: 3pm sync. Contract due today.")])]
+    digests, client = make_digests(settings, conn, memory, bus, script, notifications)
+
+    await digests.afternoon()
+
+    assert len(client.calls) == 1
+    assert client.calls[0]["model"] == HAIKU  # lighter than the morning brief
+    assert notifications == ["Still on: 3pm sync. Contract due today."]
+
+
 async def test_morning_brief_actively_reads_google_chat(settings, conn, memory, bus):
     # "Read the chat without me prompting" — the brief must query Chat on its
     # own and feed what it finds to the model, exactly like it does for Gmail.

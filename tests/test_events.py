@@ -32,11 +32,11 @@ def make_sweeper(settings, conn, memory, bus, script, notifications):
     async def notify(text: str) -> None:
         notifications.append(text)
 
-    # Pin quiet hours far away from "now" so sweeps run deterministically.
-    now = datetime.now(ZoneInfo(TZ))
-    far = (now + timedelta(hours=6)).time().replace(second=0, microsecond=0)
-    far_end = (now + timedelta(hours=7)).time().replace(second=0, microsecond=0)
-    settings.quiet_hours = (far, far_end)
+    # Open the working window to all hours/days so sweeps run deterministically
+    # whatever time the test suite happens to run.
+    settings.work_days = "mon-sun"
+    settings.work_start_hour = 0
+    settings.work_end_hour = 24
     return Sweeper(settings, bus, memory, brain, notify), client
 
 
@@ -87,18 +87,16 @@ async def test_suppressed_source_never_reaches_llm(settings, conn, memory, bus):
     assert row["disposition"] == "suppressed"
 
 
-async def test_quiet_hours_defer_sweeps(settings, conn, memory, bus):
+async def test_off_hours_defer_sweeps(settings, conn, memory, bus):
     bus.enqueue("gmail", "new_email", "a@b.c", {"snippet": "late email"})
     notifications: list[str] = []
     sweeper, client = make_sweeper(settings, conn, memory, bus, script=[], notifications=notifications)
-    now = datetime.now(ZoneInfo(TZ))
-    settings.quiet_hours = (
-        (now - timedelta(hours=1)).time(),
-        (now + timedelta(hours=1)).time(),
-    )
+    # Restrict the working window to a day that isn't today → outside work hours.
+    names = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    settings.work_days = names[(datetime.now(ZoneInfo(TZ)).weekday() + 1) % 7]
     assert await sweeper.run_sweep() == 0
     assert client.calls == []
-    # Event still pending — the morning digest will pick it up.
+    # Event still pending — the next brief will pick it up.
     assert len(bus.pending()) == 1
 
 

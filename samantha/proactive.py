@@ -9,8 +9,9 @@ the *shape* of the calendar, which nothing else watches.
 Deterministic and zero-token: the nudges are found and phrased in plain code,
 so they cost nothing and run even when the daily budget is spent. Each distinct
 nudge fires exactly once (dedup in integration_state), suppress rules apply
-(source 'calendar'), and quiet hours are honoured — except an imminent meeting,
-which is exactly the thing worth a late ping.
+(source 'calendar'), and it only runs inside the working window (weekday
+business hours) — off-hours she rests and the evening brief carries anything
+pending.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from zoneinfo import ZoneInfo
 
 from .config import Settings
 from .db import kv_get, kv_set
-from .events import in_quiet_hours
+from .events import in_work_hours
 from .rules import RulesEngine
 
 log = logging.getLogger(__name__)
@@ -141,6 +142,13 @@ class ProactiveScanner:
             return 0
         tz = ZoneInfo(self.settings.timezone)
         now = datetime.now(tz)
+        if not in_work_hours(
+            now,
+            self.settings.work_weekdays(),
+            self.settings.work_start_hour,
+            self.settings.work_end_hour,
+        ):
+            return 0  # off-hours she rests; the 21:00 brief carries anything pending
         try:
             events = await asyncio.to_thread(
                 self.gcal.list_events,
@@ -153,8 +161,7 @@ class ProactiveScanner:
 
         pushed = 0
 
-        # Imminent meetings — worth a ping even inside quiet hours (a meeting
-        # you'd otherwise miss is precisely why you'd want to be woken).
+        # Meetings about to start.
         for ev, start in imminent_meetings(events, now, tz):
             if not self.rules.allows(SOURCE, str(ev.get("summary", ""))):
                 continue
@@ -162,15 +169,14 @@ class ProactiveScanner:
                 await self.notify(meeting_line(ev, start, now))
                 pushed += 1
 
-        # Conflicts — useful but not urgent; hold them until waking hours.
-        if not in_quiet_hours(now, self.settings.quiet_hours):
-            for a, b in find_conflicts(events, now, tz):
-                ids = sorted([str(a.get("id")), str(b.get("id"))])
-                if not self.rules.allows(SOURCE, str(a.get("summary", ""))):
-                    continue
-                if self._fire_once(f"nudge:conflict:{ids[0]}:{ids[1]}", now):
-                    await self.notify(conflict_line(a, b, tz))
-                    pushed += 1
+        # Double-bookings in the look-ahead window.
+        for a, b in find_conflicts(events, now, tz):
+            ids = sorted([str(a.get("id")), str(b.get("id"))])
+            if not self.rules.allows(SOURCE, str(a.get("summary", ""))):
+                continue
+            if self._fire_once(f"nudge:conflict:{ids[0]}:{ids[1]}", now):
+                await self.notify(conflict_line(a, b, tz))
+                pushed += 1
 
         return pushed
 

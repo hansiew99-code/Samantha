@@ -63,6 +63,12 @@ def in_quiet_hours(now: datetime, quiet: tuple[time, time]) -> bool:
     return t >= start or t < end  # wraps midnight
 
 
+def in_work_hours(now: datetime, weekdays: set[int], start_hour: int, end_hour: int) -> bool:
+    """True inside the working window — the only time proactive sweeps/scans run.
+    weekdays are datetime.weekday() ints (Mon=0); end_hour is exclusive."""
+    return now.weekday() in weekdays and start_hour <= now.hour < end_hour
+
+
 class EventBus:
     def __init__(self, conn: sqlite3.Connection, rules: RulesEngine) -> None:
         self.conn = conn
@@ -127,8 +133,13 @@ class Sweeper:
         is empty, suppressed-only, inside quiet hours, or budget-exhausted.
         In degraded mode sweeps thin out to hourly (BRIEF §9)."""
         now = datetime.now(ZoneInfo(self.settings.timezone))
-        if in_quiet_hours(now, self.settings.quiet_hours):
-            return 0
+        if not in_work_hours(
+            now,
+            self.settings.work_weekdays(),
+            self.settings.work_start_hour,
+            self.settings.work_end_hour,
+        ):
+            return 0  # off-hours: events stay queued for the 21:00 brief
         if self.brain is not None:
             mode = self.brain.governor.mode()
             if mode == DETERMINISTIC:
