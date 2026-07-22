@@ -10,6 +10,7 @@ from samantha.telegram_gateway import (
     split_telegram_text,
     telegram_html,
 )
+from samantha.replies import OwnerReply
 
 
 class FakeBot:
@@ -90,6 +91,32 @@ async def test_reactive_reply_is_logged_only_after_every_chunk_succeeds(settings
 
     assert len(delivered) == 1
     assert delivered[0][1] == "telegram_reply"
+
+
+async def test_degraded_reply_is_recorded_as_error_not_success(settings):
+    settings.telegram_chat_id = 123
+    delivered: list[tuple[str, str]] = []
+
+    async def answer(_text: str) -> OwnerReply:
+        return OwnerReply(
+            "I couldn't check that.",
+            history_channel="telegram_error",
+            status="degraded",
+        )
+
+    gateway = TelegramGateway(
+        settings,
+        on_message=answer,
+        on_delivered=lambda text, channel: delivered.append((text, channel)),
+    )
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=123),
+        message=FakeReplyMessage(),
+    )
+
+    await gateway._handle_message(update, None)
+
+    assert delivered == [("I couldn't check that.", "telegram_error")]
 
 
 async def test_callback_action_and_reply_are_both_recorded(settings):

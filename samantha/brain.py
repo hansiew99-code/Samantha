@@ -18,8 +18,9 @@ from .config import Settings
 from .context import UNTRUSTED_PROACTIVE_MARKER, assemble
 from .governor import DETERMINISTIC, Governor, Usage
 from .memory import Memory
+from .replies import OwnerReply
 from .router import MODEL_PARAMS, OPUS, SONNET, TIER_ORDER, cap_tier, pick_model
-from .tools.registry import ToolRegistry
+from .tools.registry import ToolRegistry, validate_provider_tools
 
 log = logging.getLogger(__name__)
 
@@ -28,7 +29,6 @@ TOOL_RESULT_CONTEXT_CHAR_BUDGET = 12_000
 
 ESCALATE_SPEC = {
     "name": "escalate",
-    "strict": True,
     "description": (
         "Hand the current task to a more capable (more expensive) model. Call "
         "this instead of delivering a mediocre answer when the task needs "
@@ -77,13 +77,23 @@ class Brain:
     def max_tier(self) -> str:
         return self.governor.max_tier()
 
-    async def handle_message(self, text: str) -> str:
+    async def handle_message(self, text: str) -> str | OwnerReply:
+        # Provenance is already stored locally with every integration event.
+        # Answer exact source questions without a model call so "Chat or
+        # Gmail?" remains fast, free, and available during provider outages.
+        try:
+            source_answer = self.memory.recent_event_source_answer(text)
+        except Exception:  # noqa: BLE001 — fall through to the normal tool path
+            log.exception("local provenance lookup failed")
+            source_answer = None
+        if source_answer is not None:
+            self.memory.log_message("user", text)
+            return source_answer
         if self.governor.mode() == DETERMINISTIC:
             self.memory.log_message("user", text)
             reply = (
-                "I've hit today's token budget, so I'm resting my brain until "
-                "tomorrow — reminders still fire and I'm still collecting "
-                "events for tomorrow's brief. (/spend for details.)"
+                "I've used today's model budget. Reminders and monitoring are still "
+                "on; full replies resume tomorrow. /spend has the numbers."
             )
             return reply
         model = pick_model(text, max_tier=self.max_tier())
@@ -119,9 +129,11 @@ class Brain:
             )
         except Exception:  # noqa: BLE001 — never let one message kill the daemon
             log.exception("handle_message failed")
-            reply = (
-                "Something went wrong reaching my brain just now — I've logged "
-                "it. Try me again in a moment?"
+            reply = OwnerReply(
+                "I couldn't check that. Something failed on my side, so nothing "
+                "changed—and I won't guess.",
+                history_channel="telegram_error",
+                status="degraded",
             )
         # The Telegram transport records the assistant turn only after every
         # reply chunk has been accepted.  Logging here would create phantom
@@ -143,6 +155,7 @@ class Brain:
             tools = sorted(
                 self.registry.specs() + [ESCALATE_SPEC], key=lambda t: t["name"]
             )
+        validate_provider_tools(tools)
         messages = list(messages)
         authorized_mutations = owner_authorized_mutations or set()
 
@@ -476,8 +489,8 @@ class Brain:
         if successful_receipts:
             return Brain._preferred_receipt(successful_receipts, mutation_receipts)
         return (
-            "I've reached today's token limit. Nothing was changed; reminders "
-            "and existing watches are still running."
+            "I've used today's model budget. Nothing was changed; reminders "
+            "and monitoring are still running."
         )
 
     @staticmethod

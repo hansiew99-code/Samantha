@@ -1,3 +1,68 @@
+# Samantha v0.2.1 — Grounded Voice & Provider Recovery
+
+**Status:** deployment candidate
+
+**Prepared:** 22 July 2026
+
+**Delivery surface:** Telegram
+
+This patch fixes the failed replies shown in the 6:09 PM Telegram screenshot and changes how Samantha earns a human voice. The immediate outage was not a weak model response: Anthropic rejected the interactive tool bundle before the model could run. The proactive lane kept talking because sweeps and digests intentionally use no tools.
+
+## Root cause fixed
+
+- `gchat_recent.limit` advertised JSON Schema `minimum` and `maximum` constraints. Anthropic's strict-tool grammar rejected those constraints with HTTP 400.
+- Every tool, including read-only lookups and the escalation helper, was marked strict. The production request therefore carried 22 strict tools, above Anthropic's documented limit of 20.
+- The catch-all turned that engineering failure into the canned line “Something went wrong reaching my brain … Try me again”, transferred the retry to the owner, and then let the failed turn erase the proactive message's referent.
+
+The fix reserves strict schemas for the 15 possible side-effecting tools, leaves reads and escalation non-strict, removes the unsupported range keywords while keeping the same runtime clamp, and validates every final provider bundle before a request leaves the process. The validator checks unsupported schema constraints plus Anthropic's current 20 strict-tool, 24 optional-parameter, and 16 union-parameter limits. See Anthropic's [strict tool use](https://platform.claude.com/docs/en/agents-and-tools/tool-use/strict-tool-use) and [structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs) documentation.
+
+## Source answers that work without the model
+
+- “Reanne's August brief is on Chat or Gmail?” now resolves against recent durable integration events before routing to Anthropic.
+- A unique, strongly matching Chat event answers: “Google Chat — Reanne's August brief came through there.”
+- This path spends zero model tokens and still works during a language-service outage or after the daily model budget is used.
+- Weak matches and equal cross-source matches deliberately fall through instead of guessing.
+
+## Failure continuity
+
+- Degraded replies now carry typed delivery metadata and are stored as `telegram_error`, not as successful assistant dialogue.
+- A user retry or degraded response no longer acknowledges and discards the preceding proactive push. The referent closes only after a successfully delivered reply, command result, or button outcome.
+- Error copy is direct and truthful: it owns the failure, confirms that nothing changed, refuses to guess, and never asks the owner to repeat the message.
+- Error turns are excluded from replayed dialogue, preventing a temporary outage from bloating or polluting future context.
+
+## Human voice overhaul
+
+- Replaced fictional-character cosplay and forced lowercase with a compact behavior contract: emotionally perceptive, operationally formidable, specific, decisive, and natural.
+- Default response order is answer/decision first, source or evidence second, then one useful next move only when needed.
+- Banned internal-system narration, “my brain”, ceremonial chatbot openings, fake intimacy, generic item counts, and stock alert headings.
+- Proactive instructions now require the exact source, the consequence, and a ranked next move. “Two things waiting on you” and “worth your attention” are explicitly disallowed.
+- Multiple sweep alerts are bundled as clean source-labelled bullets rather than a canned numbered report.
+- Morning, afternoon, evening, and zero-model-budget briefs preserve source labels and avoid exposing implementation language.
+
+## Token and context changes
+
+- The stable system prompt fell from roughly 5,954 to 3,975 characters—about a 33% reduction by the project's conservative estimator.
+- Exact source questions bypass the model entirely.
+- Failed replies no longer enter the normal dialogue window.
+- Strict grammar is used only where a malformed call could change state; read tools no longer consume the scarce strict-schema allowance.
+- Existing bounded retrieval remains in place: recent dialogue, proactive context, facts, summaries, core memory, and aggregate tool results all have separate hard ceilings.
+
+Anthropic's current context guidance confirms that system text, message history, tool definitions, and tool results all occupy context, and cached tokens still count toward the window. Prompt caching lowers repeated processing cost; it does not make context bloat disappear. See [context windows](https://platform.claude.com/docs/en/build-with-claude/context-windows), [token counting](https://platform.claude.com/docs/en/build-with-claude/token-counting), and [managing tool context](https://platform.claude.com/docs/en/agents-and-tools/tool-use/manage-tool-context).
+
+## Verification
+
+- **251 tests pass locally**, including exact regressions for the screenshot's Reanne/Chat/Gmail question, zero model calls, provider schema limits, degraded Telegram delivery, proactive referent continuity, and banned robotic phrases.
+- Full Ubuntu x86_64 tests, a real Anthropic tool-bundle smoke call, production service status, and post-restart logs are required before this entry is marked deployed.
+
+## Still intentionally open
+
+- The zero-token provenance resolver uses recent event metadata; Telegram quoted-reply IDs and durable delivery-to-event links would make very short questions such as “where was that?” even stronger.
+- Gmail and Google Chat still poll every few minutes. Provider push subscriptions plus periodic reconciliation remain the target for lower latency without constant model calls.
+- The full toolset is stable and cacheable, but provider token counting and deferred/tool-search loading could further reduce tool-definition context on supported models.
+- Conditional watches are still Gmail-specific. Chat, calendar, tasks, approvals, and arbitrary commitments need the common open-loop state machine described in the research note.
+
+---
+
 # Samantha v0.2.0 — Attention & Follow-Through
 
 **Status:** deployed to production

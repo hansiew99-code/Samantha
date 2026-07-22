@@ -4,7 +4,7 @@
 
 **Scope:** proactivity, human tone, durable memory, context/token efficiency, autonomy, source coverage, and trust
 
-**Implementation reference:** the unreleased v0.2.0 branch described in [PATCH_NOTES.md](../PATCH_NOTES.md)
+**Implementation reference:** the v0.2.1 candidate described in [PATCH_NOTES.md](../PATCH_NOTES.md)
 
 ## Executive conclusion
 
@@ -236,7 +236,7 @@ Examples:
 
 ### Current branch
 
-**Implemented as prompt direction; not yet behaviorally proven.** The prompt now prioritizes judgment and continuity, forbids redundant permission questions, and asks for one coherent response. This needs a golden transcript suite and real conversation review. A charming sentence does not compensate for a false claim or dropped commitment.
+**Implemented in the prompt and deterministic owner-copy paths; still needs real transcript review.** The stable prompt is now a behavior contract rather than film-character cosplay, is about one third shorter, and requires answer-first/source-second phrasing, judgment, and one useful next move. Sweep and digest prompts preserve source labels and ban stock count/urgency headings. Degraded replies are typed separately from successful dialogue, and source questions with a unique recent event match bypass the model entirely. Voice-contract regressions cover the supplied Reanne/Google Chat scenario, but a charming sentence still does not compensate for a false claim or dropped commitment.
 
 ## 6. Memory and context: durable store, small working set
 
@@ -258,7 +258,7 @@ The correct pattern is therefore:
 
 ### Current branch
 
-**Partial.** SQLite holds raw messages, facts, people, core memory, and a running summary. FTS retrieves up to eight facts. Recent messages, facts, and summary now have separate estimated token budgets. Nightly consolidation uses oldest-first checkpointed chunks and refuses to advance on partial/invalid output. Multi-value facts no longer erase one another by default.
+**Partial.** SQLite holds raw messages, facts, people, source events, core memory, and a running summary. FTS retrieves up to eight facts. Recent dialogue, proactive referents, facts, summaries, core memory, and tool results have independent bounds. Failed replies no longer enter normal dialogue context, and recent source provenance can be resolved locally with no model tokens. Nightly consolidation uses oldest-first checkpointed chunks and refuses to advance on partial/invalid output. Multi-value facts no longer erase one another by default.
 
 Remaining problems:
 
@@ -272,6 +272,7 @@ Remaining problems:
 
 - Use Anthropic's [token-counting endpoint](https://platform.claude.com/docs/en/build-with-claude/token-counting) with the complete request—including tools—before expensive calls or when near a hard context budget.
 - Keep the stable persona/core prefix cacheable, but do not confuse caching with context removal. [Prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) reduces repeated processing cost/latency for matching prefixes; cached tokens still count toward the window.
+- For a toolset that continues to grow, evaluate Anthropic's [tool-context management](https://platform.claude.com/docs/en/agents-and-tools/tool-use/manage-tool-context): deferred/tool-search loading reduces up-front definitions, while programmatic calls reduce multi-round tool-result traffic. Keep local authorization enforcement independent of whichever loading mechanism is used.
 - Do not assume chat, sweep, and digest calls share a cache entry when their tool lists or request parameters differ. Verify `cache_read_input_tokens` in the spend ledger.
 - Collapse nightly extraction/summary/core refresh into one strict structured response where quality permits, reducing repeated transcript input.
 - Promote new commitments into working memory synchronously; nightly consolidation should be refinement, not the only path to remembering today's promise.
@@ -285,7 +286,8 @@ Trust is mostly lost through small operational failures: duplicate mutations, em
 
 **Implemented/partial:**
 
-- Tool schemas use `strict: true` and reject undeclared top-level properties. Anthropic documents strict tool use as grammar-constrained schema compliance; see [Strict tool use](https://platform.claude.com/docs/en/agents-and-tools/tool-use/strict-tool-use).
+- Mutation-critical tool schemas use `strict: true`; read-only tools and the local escalation helper remain non-strict. A preflight validator rejects unsupported structured-output constraints and enforces Anthropic's strict-tool/schema complexity limits before the API call. Runtime code still validates and clamps tool inputs. Anthropic documents strict tool use as grammar-constrained schema compliance; see [Strict tool use](https://platform.claude.com/docs/en/agents-and-tools/tool-use/strict-tool-use).
+- Degraded model replies use a separate durable channel and do not acknowledge the proactive message they failed to answer. Only a successfully delivered reply/action closes that referent.
 - Reminder, watcher, and pending-action creation deduplicate identical retries.
 - A successful tool receipt becomes the fallback if the model's final prose is empty.
 - A successful tool receipt also survives a failed follow-up model call, so the owner is not asked to repeat a mutation that already happened.

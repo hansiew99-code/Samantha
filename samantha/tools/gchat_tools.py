@@ -57,8 +57,6 @@ def register(registry: ToolRegistry, gchat: GChatClient) -> None:
                 "query": {"type": "string", "description": "Optional: filter by sender or text."},
                 "limit": {
                     "type": "integer",
-                    "minimum": 1,
-                    "maximum": 25,
                     "description": "Max messages to return (default 15, hard cap 25).",
                 },
             },

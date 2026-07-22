@@ -50,7 +50,7 @@ async def test_n_events_one_llm_call(settings, conn, memory, bus):
 
     notifications: list[str] = []
     script = [FakeResponse(content=[text_block(decisions_json(
-        {"i": 0, "action": "notify", "message": "Heads up: email 0"},
+        {"i": 0, "action": "notify", "message": "Sender 0 needs a reply today."},
         *[{"i": i, "action": "digest"} for i in range(1, 6)],
     ))])]
     sweeper, client = make_sweeper(settings, conn, memory, bus, script, notifications)
@@ -59,7 +59,7 @@ async def test_n_events_one_llm_call(settings, conn, memory, bus):
 
     assert handled == 6
     assert len(client.calls) == 1  # six events, ONE call — never one per event
-    assert notifications == ["Heads up: email 0"]
+    assert notifications == ["Gmail — Sender 0 needs a reply today."]
     dispositions = {
         r["disposition"]
         for r in conn.execute("SELECT disposition FROM events_queue WHERE processed_at IS NOT NULL")
@@ -122,7 +122,7 @@ async def test_vip_notification_gets_flagged(settings, conn, memory, bus):
     ))])]
     sweeper, _ = make_sweeper(settings, conn, memory, bus, script, notifications)
     await sweeper.run_sweep()
-    assert notifications == ["❗ Boss wants a call"]
+    assert notifications == ["❗ Gmail — Boss wants a call"]
 
 
 async def test_sweep_bundles_multiple_interruptions_and_supplies_time_context(
@@ -156,7 +156,11 @@ async def test_sweep_bundles_multiple_interruptions_and_supplies_time_context(
     await sweeper.run_sweep()
 
     assert len(notifications) == 1
-    assert "1. Sarah" in notifications[0] and "2. Marcus" in notifications[0]
+    assert notifications == [
+        "• Gmail — Sarah needs the deck by 4.\n"
+        "• Google Chat — Marcus says the client's waiting."
+    ]
+    assert "worth your attention" not in notifications[0].lower()
     payload = json.loads(client.calls[0]["messages"][0]["content"])
     assert payload["now"] and payload["timezone"] == TZ
     assert payload["events"][0]["subject"] == "Deck due today"

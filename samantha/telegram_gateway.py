@@ -24,6 +24,7 @@ from telegram.ext import (
 )
 
 from .config import Settings
+from .replies import OwnerReply
 
 log = logging.getLogger(__name__)
 
@@ -62,8 +63,9 @@ def telegram_html(text: str) -> str:
     escaped = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", escaped)
     return escaped
 
-OnMessage = Callable[[str], Awaitable[str | None]]
-OnCallback = Callable[[str], Awaitable[str | None]]
+Reply = str | OwnerReply
+OnMessage = Callable[[str], Awaitable[Reply | None]]
+OnCallback = Callable[[str], Awaitable[Reply | None]]
 OnDelivered = Callable[[str, str], None]
 OnCallbackReceived = Callable[[str], None]
 
@@ -149,11 +151,12 @@ class TelegramGateway:
             return
         reply = await self.on_message(update.message.text)
         if reply:
-            for chunk in split_telegram_text(reply):
+            text, channel = self._reply_payload(reply, "telegram_reply")
+            for chunk in split_telegram_text(text):
                 await update.message.reply_text(
                     telegram_html(chunk), parse_mode="HTML"
                 )
-            self._record_delivered(reply, "telegram_reply")
+            self._record_delivered(text, channel)
 
     async def _handle_callback(self, update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._authorized(update) or update.callback_query is None:
@@ -170,11 +173,12 @@ class TelegramGateway:
                     log.exception("could not persist Telegram callback input")
             reply = await self.on_callback(query.data)
             if reply and query.message is not None:
-                for chunk in split_telegram_text(reply):
+                text, channel = self._reply_payload(reply, "telegram_callback")
+                for chunk in split_telegram_text(text):
                     await query.message.reply_text(
                         telegram_html(chunk), parse_mode="HTML"
                     )
-                self._record_delivered(reply, "telegram_callback")
+                self._record_delivered(text, channel)
 
     async def _dispatch_command(self, update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._authorized(update) or update.message is None or not update.message.text:
@@ -184,11 +188,12 @@ class TelegramGateway:
         if handler:
             reply = await handler(update.message.text)
             if reply:
-                for chunk in split_telegram_text(reply):
+                text, channel = self._reply_payload(reply, "telegram_command")
+                for chunk in split_telegram_text(text):
                     await update.message.reply_text(
                         telegram_html(chunk), parse_mode="HTML"
                     )
-                self._record_delivered(reply, "telegram_command")
+                self._record_delivered(text, channel)
 
     async def _cmd_start(self, update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._authorized(update) or update.message is None:
@@ -207,6 +212,12 @@ class TelegramGateway:
     @staticmethod
     async def _echo(text: str) -> str:
         return f"(echo) {text}"
+
+    @staticmethod
+    def _reply_payload(reply: Reply, default_channel: str) -> tuple[str, str]:
+        if isinstance(reply, OwnerReply):
+            return reply.text, reply.history_channel
+        return reply, default_channel
 
     def _record_delivered(self, text: str, channel: str) -> None:
         if self.on_delivered is None:

@@ -7,6 +7,7 @@ Facts are never deleted. A contradicting fact supersedes the old row
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -18,6 +19,19 @@ _STOPWORDS = frozenset(
     "a an the i me my you your it is are was were be to of in on at for and or "
     "do does did what when where who how can could would should with about".split()
 )
+
+_PROVENANCE_STOPWORDS = _STOPWORDS | frozenset(
+    "app application source platform chat google gmail email slack clickup calendar "
+    "this that these those there here come came coming through land landed sent send "
+    "arrive arrived which from did does either vs versus".split()
+)
+_SOURCE_LABELS = {
+    "gchat": "Google Chat",
+    "gmail": "Gmail",
+    "slack": "Slack",
+    "clickup": "ClickUp",
+    "calendar": "Google Calendar",
+}
 
 # The core block is present on every model request.  Bound both individual
 # values and the rendered block so an enthusiastic stream of standing rules or
@@ -242,10 +256,11 @@ class Memory:
         return list(reversed(rows))
 
     def recent_dialogue_messages(self, limit: int = 20) -> list[sqlite3.Row]:
-        """Recent owner/reactive turns, excluding unsolicited push traffic."""
+        """Recent successful dialogue, excluding pushes and degraded replies."""
         rows = self.conn.execute(
             "SELECT id, role, content, channel FROM messages "
-            "WHERE role IN ('user','assistant') AND channel != 'telegram_push' "
+            "WHERE role IN ('user','assistant') "
+            "AND channel NOT IN ('telegram_push', 'telegram_error') "
             "ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
@@ -254,20 +269,135 @@ class Memory:
     def recent_proactive_messages(self, limit: int = 2) -> list[sqlite3.Row]:
         """Latest unacknowledged pushes, kept separately from dialogue.
 
-        Once any subsequent owner/reactive turn is recorded, an older push is
-        no longer repeated in every prompt.  Immediately before an owner says
-        “yes”, however, the push is still newer than the prior dialogue and is
-        available as the referent.
+        A push remains the live referent across owner retries and degraded
+        responses.  Only a successfully delivered reactive answer/action
+        closes it, so one provider failure cannot make the next attempt lose
+        the very message the owner was asking about.
         """
         rows = self.conn.execute(
             "SELECT id, role, content, channel FROM messages "
             "WHERE role = 'assistant' AND channel = 'telegram_push' "
             "AND id > COALESCE((SELECT MAX(id) FROM messages "
-            "WHERE channel != 'telegram_push'), 0) "
+            "WHERE role = 'assistant' AND channel IN "
+            "('telegram_reply', 'telegram_callback', 'telegram_command')), 0) "
             "ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return list(reversed(rows))
+
+    def recent_event_source_answer(
+        self,
+        question: str,
+        *,
+        limit: int = 200,
+    ) -> str | None:
+        """Answer a recent event-provenance question locally when unambiguous.
+
+        Source metadata is already durable in ``events_queue``.  Questions
+        such as “Chat or Gmail?” should not spend model tokens—or fail merely
+        because the language service is unavailable.  Conservative matching
+        returns ``None`` on weak or cross-source ties rather than guessing.
+        """
+        normalized = question.casefold().replace("’", "'")
+        mentioned_sources: set[str] = set()
+        if re.search(r"\b(?:google\s+)?chat\b", normalized):
+            mentioned_sources.add("gchat")
+        if re.search(r"\b(?:gmail|e-?mail)\b", normalized):
+            mentioned_sources.add("gmail")
+        if re.search(r"\bslack\b", normalized):
+            mentioned_sources.add("slack")
+        if re.search(r"\bclickup\b", normalized):
+            mentioned_sources.add("clickup")
+        if re.search(r"\bcalendar\b", normalized):
+            mentioned_sources.add("calendar")
+
+        asks_alternative = " or " in normalized and len(mentioned_sources) >= 2
+        asks_where = bool(
+            re.search(r"\b(?:where|which\s+(?:app|source|platform)|what\s+(?:app|source|platform))\b", normalized)
+            and re.search(r"\b(?:from|through|on|in|came|landed|sent|arrived)\b", normalized)
+        )
+        if not asks_alternative and not asks_where:
+            return None
+
+        query_tokens = self._provenance_tokens(normalized)
+        if len(query_tokens) < 2:
+            return None
+
+        rows = self.conn.execute(
+            "SELECT id, source, scope, payload, created_at FROM events_queue "
+            "WHERE source IN ('gchat','gmail','slack','clickup','calendar') "
+            "AND created_at >= datetime('now', '-30 days') "
+            "ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        best_by_source: dict[str, tuple[int, int]] = {}
+        for row in rows:
+            source = str(row["source"])
+            if asks_alternative and source not in mentioned_sources:
+                continue
+            try:
+                payload = json.loads(str(row["payload"]))
+            except (TypeError, ValueError):
+                payload = str(row["payload"])
+            haystack = f"{row['scope']} {json.dumps(payload, ensure_ascii=False, default=str)}"
+            hay_tokens = set(self._normalized_tokens(haystack))
+            score = sum(token in hay_tokens for token in query_tokens)
+            if score < 2:
+                continue
+            current = best_by_source.get(source)
+            candidate = (score, int(row["id"]))
+            if current is None or candidate > current:
+                best_by_source[source] = candidate
+
+        if not best_by_source:
+            return None
+        ranked = sorted(
+            best_by_source.items(), key=lambda item: item[1], reverse=True
+        )
+        best_source, (best_score, _event_id) = ranked[0]
+        if best_score < max(2, (len(query_tokens) + 1) // 2):
+            return None
+        if len(ranked) > 1 and ranked[1][1][0] == best_score:
+            return None
+
+        label = _SOURCE_LABELS[best_source]
+        topic = self._provenance_topic(question)
+        if topic:
+            return f"{label} — {topic} came through there."
+        return f"{label} — that's where it came through."
+
+    @staticmethod
+    def _normalized_tokens(value: str) -> list[str]:
+        tokens: list[str] = []
+        for raw in _TOKEN_RE.findall(value.casefold().replace("’", "'")):
+            token = raw[:-2] if raw.endswith("'s") else raw
+            if len(token) > 1:
+                tokens.append(token)
+        return tokens
+
+    @classmethod
+    def _provenance_tokens(cls, value: str) -> list[str]:
+        return [
+            token
+            for token in cls._normalized_tokens(value)
+            if token not in _PROVENANCE_STOPWORDS
+        ][:10]
+
+    @staticmethod
+    def _provenance_topic(question: str) -> str | None:
+        value = question.strip().rstrip("?.! ")
+        patterns = (
+            r"^(?P<topic>.+?)\s+(?:is|was)\s+(?:it\s+)?(?:on|in|from)\s+",
+            r"^where\s+(?:did|does|was)\s+(?P<topic>.+?)\s+(?:come|came|land|arrive)(?:\s+from)?$",
+        )
+        for pattern in patterns:
+            match = re.match(pattern, value, flags=re.IGNORECASE)
+            if not match:
+                continue
+            topic = " ".join(match.group("topic").split()).strip(" -—:,")
+            if topic.casefold() not in {"it", "that", "this"} and len(topic) <= 120:
+                return topic
+        return None
 
     def search_messages(self, query: str, k: int = 6) -> list[sqlite3.Row]:
         """Search the durable conversation ledger with a small bounded result.
