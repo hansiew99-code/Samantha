@@ -24,9 +24,11 @@ from .governor import Governor
 from .integrations import google_auth
 from .integrations.clickup import ClickUpClient, ClickUpSync
 from .integrations.gcal import GCalClient
+from .integrations.gchat import GChatClient
 from .integrations.gmail import GmailClient
 from .integrations.slack import SlackService
 from .memory import Memory
+from .proactive import ProactiveScanner
 from .reminders import ReminderService
 from .rules import RulesEngine
 from .telegram_gateway import TelegramGateway
@@ -34,6 +36,7 @@ from .tools import ToolRegistry
 from .tools import (
     calendar_tools,
     clickup_tools,
+    gchat_tools,
     gmail_tools,
     memory_tools,
     reminder_tools,
@@ -44,8 +47,10 @@ from .tools import (
 log = logging.getLogger(__name__)
 
 GMAIL_POLL_MINUTES = 5
+GCHAT_POLL_MINUTES = 3
 CLICKUP_POLL_MINUTES = 10
 SWEEP_MINUTES = 30
+PROACTIVE_SCAN_MINUTES = 10
 
 
 @dataclass
@@ -61,12 +66,14 @@ class App:
     rules: RulesEngine = None
     bus: EventBus = None
     sweeper: Sweeper | None = None
+    scanner: ProactiveScanner | None = None
     digests: DigestService | None = None
     consolidator: Consolidator | None = None
     brain: Brain | None = None
     gateway: TelegramGateway | None = None
     gcal: GCalClient | None = None
     gmail: GmailClient | None = None
+    gchat: GChatClient | None = None
     slack: SlackService | None = None
     clickup_sync: ClickUpSync | None = None
     callbacks: CallbackRouter = field(default_factory=CallbackRouter)
@@ -210,6 +217,33 @@ def _wire_google(app: App) -> None:
         app.scheduler.add_job(poll_gmail, "interval", minutes=GMAIL_POLL_MINUTES, id="gmail-poll")
     log.info("google: calendar + gmail enabled")
 
+    _wire_gchat(app, creds)
+
+
+def _wire_gchat(app: App, creds) -> None:
+    settings = app.settings
+    if not settings.gchat_enabled:
+        log.info("gchat: disabled (set GCHAT_ENABLED=1 after re-consenting scopes)")
+        return
+    app.gchat = GChatClient(creds=creds, self_id=settings.gchat_self_id or None)
+    gchat_tools.register(app.registry, app.gchat)
+
+    async def poll_gchat() -> None:
+        try:
+            new = await asyncio.to_thread(app.gchat.poll_new, app.conn)
+        except Exception:
+            log.exception("gchat poll failed")
+            return
+        for msg in new:
+            scope = msg.get("sender_name") or msg.get("sender") or "*"
+            app.bus.enqueue("gchat", "new_message", scope, msg)
+        if new:
+            log.info("gchat: %d new message(s) enqueued", len(new))
+
+    if not settings.dry_run:
+        app.scheduler.add_job(poll_gchat, "interval", minutes=GCHAT_POLL_MINUTES, id="gchat-poll")
+    log.info("gchat: enabled")
+
 
 # -- slack --------------------------------------------------------------------
 
@@ -257,6 +291,7 @@ def _wire_clickup(app: App) -> None:
 def _wire_proactivity(app: App) -> None:
     settings = app.settings
     app.sweeper = Sweeper(settings, app.bus, app.memory, app.brain, app.notify)
+    app.scanner = ProactiveScanner(settings, app.conn, app.rules, app.notify, gcal=app.gcal)
     app.digests = DigestService(
         settings, app.memory, app.bus, app.brain, app.notify,
         gcal=app.gcal, gmail=app.gmail, conn=app.conn,
@@ -265,6 +300,11 @@ def _wire_proactivity(app: App) -> None:
         return  # sweeps and digests call the LLM — no background spend in a dry run
     app.scheduler.add_job(
         app.sweeper.run_sweep, "interval", minutes=SWEEP_MINUTES, id="sweep"
+    )
+    # Unprompted calendar look-ahead — zero-token nudges, so it runs on its own
+    # cadence regardless of the LLM budget.
+    app.scheduler.add_job(
+        app.scanner.scan, "interval", minutes=PROACTIVE_SCAN_MINUTES, id="proactive-scan"
     )
     app.scheduler.add_job(
         app.digests.morning,

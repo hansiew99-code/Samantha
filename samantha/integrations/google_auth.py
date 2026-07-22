@@ -1,6 +1,11 @@
 """Google OAuth: one desktop-flow consent (scripts/setup_auth.py) covering
-Calendar + Gmail; the refresh token persists at GOOGLE_TOKEN_PATH and is
-auto-refreshed here on load.
+Calendar + Gmail + Google Chat; the refresh token persists at GOOGLE_TOKEN_PATH
+and is auto-refreshed here on load.
+
+The Chat scopes are read-only and only ever see spaces the owner is already a
+member of (their DMs and rooms) — no bot install, no admin. If you authorised
+before Chat was added, re-run scripts/setup_auth.py to widen the token; the
+Chat integration stays dormant until GCHAT_ENABLED=1 regardless.
 """
 
 from __future__ import annotations
@@ -13,6 +18,8 @@ log = logging.getLogger(__name__)
 SCOPES = [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/chat.spaces.readonly",
+    "https://www.googleapis.com/auth/chat.messages.readonly",
 ]
 
 

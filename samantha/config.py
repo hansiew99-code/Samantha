@@ -32,6 +32,8 @@ class Settings:
 
     google_credentials_path: Path = Path("google_credentials.json")
     google_token_path: Path = Path("google_token.json")
+    gchat_enabled_flag: bool = False
+    gchat_self_id: str = ""  # 'users/<id>' — own messages are filtered when set
     slack_bot_token: str = ""
     slack_app_token: str = ""
     clickup_api_token: str = ""
@@ -56,6 +58,12 @@ class Settings:
     @property
     def google_enabled(self) -> bool:
         return self.google_token_path.exists()
+
+    @property
+    def gchat_enabled(self) -> bool:
+        # Rides on the Google token; off unless explicitly switched on, because
+        # it needs the extra Chat scopes (re-consent) that older tokens lack.
+        return self.google_enabled and self.gchat_enabled_flag
 
     @property
     def slack_enabled(self) -> bool:
@@ -100,6 +108,7 @@ class Settings:
             f"anthropic: {'ok' if self.anthropic_enabled else 'MISSING'}",
             f"telegram: {'ok' if self.telegram_enabled else 'MISSING'}",
             f"google: {'ok' if self.google_enabled else 'disabled'}",
+            f"google chat: {'ok' if self.gchat_enabled else 'disabled'}",
             f"slack: {'ok' if self.slack_enabled else 'disabled'}",
             f"clickup: {'ok' if self.clickup_enabled else 'disabled'}",
         ]
@@ -116,6 +125,8 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         telegram_chat_id=int(env.get("TELEGRAM_CHAT_ID", "0").strip() or 0),
         google_credentials_path=Path(env.get("GOOGLE_CREDENTIALS_PATH", "google_credentials.json")),
         google_token_path=Path(env.get("GOOGLE_TOKEN_PATH", "google_token.json")),
+        gchat_enabled_flag=env.get("GCHAT_ENABLED", "0") in ("1", "true", "yes"),
+        gchat_self_id=env.get("GCHAT_SELF_ID", "").strip(),
         slack_bot_token=env.get("SLACK_BOT_TOKEN", "").strip(),
         slack_app_token=env.get("SLACK_APP_TOKEN", "").strip(),
         clickup_api_token=env.get("CLICKUP_API_TOKEN", "").strip(),

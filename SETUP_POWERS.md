@@ -76,6 +76,7 @@ This one needs a browser for the login step, so part of it happens on your
 1. Create a project: **https://console.cloud.google.com/projectcreate** → name "samantha" → **Create** (then make sure it's selected in the top bar).
 2. Enable Calendar API: **https://console.cloud.google.com/apis/library/calendar-json.googleapis.com** → **Enable**.
 3. Enable Gmail API: **https://console.cloud.google.com/apis/library/gmail.googleapis.com** → **Enable**.
+3b. *(only if you want Google Chat too)* Enable Chat API: **https://console.cloud.google.com/apis/library/chat.googleapis.com** → **Enable**.
 4. Consent screen: **https://console.cloud.google.com/apis/credentials/consent** → **External** → app name + your email → on **Test users**, **Add** your own Gmail address → save. (Leave it in "Testing" — no need to publish.)
 5. Create the client: **https://console.cloud.google.com/apis/credentials** → **Create Credentials** → **OAuth client ID** → Application type **Desktop app** → **Create** → **Download JSON**.
 
@@ -86,7 +87,10 @@ pip install google-auth-oauthlib
 python3 - <<'PY'
 from google_auth_oauthlib.flow import InstalledAppFlow
 SCOPES = ["https://www.googleapis.com/auth/calendar",
-          "https://www.googleapis.com/auth/gmail.modify"]
+          "https://www.googleapis.com/auth/gmail.modify",
+          # keep the next two only if you enabled the Chat API in step 3b:
+          "https://www.googleapis.com/auth/chat.spaces.readonly",
+          "https://www.googleapis.com/auth/chat.messages.readonly"]
 creds = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES).run_local_server(port=0)
 open("google_token.json", "w").write(creds.to_json())
 print("wrote google_token.json")
@@ -108,6 +112,34 @@ sudo systemctl restart samantha
 ```
 
 **Test:** Telegram → "what's on my calendar tomorrow?" and "any new emails worth seeing?" and "find 30 minutes for me and alex@example.com on Thursday".
+
+---
+
+## 4. Google Chat (add-on to #3 — ~2 min)
+
+Lets her see when people message you on Google Chat and flag the ones worth
+your attention, the same way she watches Gmail. It rides on the Google login
+you already did — you just need the two extra scopes and the API turned on.
+
+1. If you didn't do steps **3b** (enable Chat API) and add the two `chat.*`
+   scopes when you made the token, do them now and re-run **Part B** to refresh
+   `google_token.json` (then re-copy it to the server as in Part C).
+2. Turn it on:
+```bash
+cd ~/samantha
+.venv/bin/python scripts/set_secret.py GCHAT_ENABLED      # enter: 1
+sudo systemctl restart samantha
+```
+3. *(optional)* Stop your own messages echoing back: send yourself anything on
+   Chat, check `journalctl -u samantha -n 40 | grep gchat`, note your
+   `users/<id>`, then `set_secret.py GCHAT_SELF_ID` with that value.
+
+**Test:** have someone message you on Google Chat, then Telegram → "any Google
+Chat messages I should see?"
+
+> Note: Chat is **read-only** here — she'll surface and summarise messages but
+> won't reply to Chat on your behalf (Gmail and Slack are the ones she drafts
+> replies for).
 
 ---
 
