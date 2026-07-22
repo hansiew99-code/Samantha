@@ -119,20 +119,50 @@ sudo systemctl restart samantha
 
 Lets her see when people message you on Google Chat and flag the ones worth
 your attention, the same way she watches Gmail. It rides on the Google login
-you already did — you just need the two extra scopes and the API turned on.
+you already did — you just need the two extra scopes and the API turned on. That
+means re-minting `google_token.json` with the wider scopes.
 
-1. If you didn't do steps **3b** (enable Chat API) and add the two `chat.*`
-   scopes when you made the token, do them now and re-run **Part B** to refresh
-   `google_token.json` (then re-copy it to the server as in Part C).
-2. Turn it on:
+**1. Enable the Chat API** (browser, "samantha" project selected):
+https://console.cloud.google.com/apis/library/chat.googleapis.com → **Enable**.
+
+**2. Make sure the client JSON is on the server.** Re-minting needs
+`google_credentials.json` (the OAuth *client* file — not your token). If you
+only ever copied the token before, put the client file on the VPS now:
+- Download it: https://console.cloud.google.com/apis/credentials → the download
+  icon on your **Desktop** OAuth client → Download JSON.
+- Move it across (base64 avoids paste corruption):
 ```bash
+# on your laptop:
+base64 client_secret_XXX.json          # copy all output
+# on the VPS:
+base64 -d > ~/samantha/google_credentials.json <<'B64'
+<paste>
+B64
+```
+
+**3. Re-mint the token with the Chat scopes.** The consent step needs a browser,
+and the redirect comes back to `localhost` — so on a headless VPS, SSH-forward a
+port first, then run the helper (it already knows all four scopes):
+```bash
+# reconnect to the VPS forwarding a port:
+ssh -L 8765:localhost:8765 you@your-vps
 cd ~/samantha
+.venv/bin/python scripts/setup_auth.py --port 8765
+```
+Open the printed URL in your laptop browser, approve **all four** permissions
+(Calendar, Gmail, + two Chat "view" ones). The token is rewritten in place on
+the VPS — nothing to copy.
+
+**4. Turn it on:**
+```bash
 .venv/bin/python scripts/set_secret.py GCHAT_ENABLED      # enter: 1
 sudo systemctl restart samantha
+.venv/bin/python -m samantha --check-config                # expect: google chat: ok
 ```
-3. *(optional)* Stop your own messages echoing back: send yourself anything on
-   Chat, check `journalctl -u samantha -n 40 | grep gchat`, note your
-   `users/<id>`, then `set_secret.py GCHAT_SELF_ID` with that value.
+
+**5.** *(optional)* Stop your own messages echoing back: send yourself anything
+on Chat, check `journalctl -u samantha -n 40 | grep gchat`, note your
+`users/<id>`, then `set_secret.py GCHAT_SELF_ID` with that value.
 
 **Test:** have someone message you on Google Chat, then Telegram → "any Google
 Chat messages I should see?"

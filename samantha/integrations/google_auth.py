@@ -42,11 +42,16 @@ def load_credentials(token_path: Path):
         return None
 
 
-def run_consent_flow(credentials_path: Path, token_path: Path) -> None:
-    """Interactive one-time consent (used by scripts/setup_auth.py)."""
+def run_consent_flow(credentials_path: Path, token_path: Path, port: int = 0) -> None:
+    """Interactive one-time consent (used by scripts/setup_auth.py).
+
+    `port=0` picks a random local port (fine when a browser and this process
+    share a machine). On a headless VPS, pass a fixed port and SSH-forward it
+    (`ssh -L <port>:localhost:<port> ...`) so the browser redirect on your
+    laptop reaches the server that's waiting here."""
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), SCOPES)
-    creds = flow.run_local_server(port=0, open_browser=False)
+    creds = flow.run_local_server(port=port, open_browser=False)
     token_path.write_text(creds.to_json())
     print(f"Token saved to {token_path}")
